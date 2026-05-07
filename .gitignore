@@ -1,7 +1,12 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
-# dependencies
-/node_modules
+# dependencies & folders
+/backend/
+/frontend/node_modules
+/frontend/.next/
+/cli/dist/
+/cli/src/arxivtd.egg-info/
+*_cache
 /.pnp
 .pnp.*
 .yarn/*

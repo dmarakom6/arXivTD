@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "arxivtd"
+version = "0.1.0"
+description = "ArXiv Trust Delineation - CLI for academic paper analysis"
+readme = "README.md"
+authors = [
+    {name = "ArXivTD Team", email = "support@arxivtd.com"}
+]
+license = {text = "GPL-3.0"}
+requires-python = ">=3.10"
+keywords = ["arxiv", "academic", "trust", "citation", "analysis"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+]
+
+dependencies = [
+    "requests>=2.28.0",
+    "questionary>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+arxivtd = "arxivtd.cli:main"
+
+[project.urls]
+Homepage = "https://arxivtd.com"
+Documentation = "https://arxivtd.com/docs"
+Repository = "https://github.com/dmarakom6/arXivTD"
+Issues = "https://github.com/dmarakom6/arXivTD/issues"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
