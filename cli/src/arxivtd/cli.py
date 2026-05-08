@@ -350,10 +350,6 @@ def check_grobid() -> bool:
 
 
 def scan_arxiv(arxiv_id: str, mode: str = "basic"):
-    if mode == "deep" and not rate_limiter.can_proceed():
-        print(f"\n❌ Rate limit exceeded. Maximum 5 scans per 30 minutes.")
-        sys.exit(1)
-
     api_key = require_config()
     url = f"{API_BASE_URL}/trust/{arxiv_id}?mode={mode}"
 
@@ -481,7 +477,7 @@ def batch_scan(directory: str, mode: str = "basic"):
     for i, pdf_file in enumerate(pdf_files, 1):
         print(f"[{i}/{len(pdf_files)}] Scanning: {pdf_file.name}")
 
-        url = f"{API_BASE_URL}/analyze/pdf?mode={mode}"
+        url = f"{API_BASE_URL}/analyze/pdf?mode={mode}&is_batch=true"
         try:
             with open(pdf_file, "rb") as f:
                 files = {"file": (pdf_file.name, f, "application/pdf")}

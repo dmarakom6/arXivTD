@@ -11,7 +11,9 @@
     "db:migrate": "cd ../backend && uv run alembic upgrade head",
     "db:seed": "psql -U marako -d arxivtd -f ../scripts/seed.sql",
     "db:console": "psql -U marako -d arxivtd",
-    "db:status": "psql -U marako -d arxivtd -c \"SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename;\""
+    "db:status": "psql -U marako -d arxivtd -c \"SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename;\"",
+    "cli:build": "cd ../cli && rm -rf dist/ && python3 -m build",
+    "cli:publish": "npm run cli:build && cd ../cli && twine upload dist/*"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.4",
