@@ -139,7 +139,7 @@ export function Navbar() {
                   <span className="max-w-[150px] truncate">{username}</span>
                 </button>
                 {userMenuOpen && (
-                  <div className="absolute right-0 mt-1 w-40 rounded-md border bg-white dark:bg-zinc-900 shadow-xl">
+                  <div className="absolute right-0 top-full w-40 rounded-md border bg-white dark:bg-zinc-900 shadow-xl z-50">
                     <button
                       onClick={handleLogout}
                       className="flex w-full items-center gap-2 px-4 py-2 text-sm text-left hover:bg-zinc-100 dark:hover:bg-zinc-800"

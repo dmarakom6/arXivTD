@@ -105,6 +105,31 @@ export interface TrustScoreResponse {
     message: string;
     details?: Record<string, unknown>;
   }>;
+  citation_patterns?: {
+    total_citations: number;
+    self_citation_rate: number;
+    clustering_score: number;
+    temporal_anomaly_score: number;
+    top_citing_authors: Array<{
+      author: string;
+      count: number;
+      rate: number;
+    }>;
+    reciprocal_pairs: Array<[string, string]>;
+  };
+  version_changes?: {
+    total_versions: number;
+    has_title_changes: boolean;
+    has_author_changes: boolean;
+    has_content_removal: boolean;
+    changes: Array<{
+      field: string;
+      from_version: number;
+      to_version: number;
+      description: string;
+      severity: string;
+    }>;
+  };
   credits_spent: number;
   processing_time_ms: number;
   scan_id: string;
@@ -240,6 +265,32 @@ export const trustApi = {
       method: "GET",
       headers: apiKey ? { "X-API-Key": apiKey } : {},
     }, true),
+  getAsync: (arxivId: string, mode: string, apiKey: string = "") =>
+    fetchApi<{ scan_id: string; status: string; mode: string; paper_id: string }>(
+      `/trust/${arxivId}/async?mode=${mode}`,
+      { method: "GET", headers: apiKey ? { "X-API-Key": apiKey } : {} },
+      true
+    ),
+};
+
+// Similar Papers API
+export const similarApi = {
+  get: (arxivId: string, apiKey: string = "") =>
+    fetchApi<{ papers: Array<{ title: string; arxiv_id: string; authors: string[] }> }>(
+      `/similar/${arxivId}`,
+      { method: "GET", headers: apiKey ? { "X-API-Key": apiKey } : {} },
+      true
+    ),
+};
+
+// Scan Status API (for polling)
+export const scanStatusApi = {
+  get: (scanId: string, apiKey: string = "") =>
+    fetchApi<{ scan_id: string; status: string; trust_score?: number; title?: string; error?: string }>(
+      `/scans/${scanId}/status`,
+      { method: "GET", headers: apiKey ? { "X-API-Key": apiKey } : {} },
+      true
+    ),
 };
 
 // Graph API

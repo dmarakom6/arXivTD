@@ -228,8 +228,36 @@ export default function PricingPage() {
                 </tr>
                 <tr className="border-b border-zinc-100 dark:border-zinc-800">
                   <td className="p-6">
-                    <div className="font-bold text-zinc-900 dark:text-zinc-100">AI Detection</div>
-                    <div className="text-[10px] text-zinc-500 uppercase tracking-tight">Detect AI-generated content</div>
+                    <div className="font-bold text-zinc-900 dark:text-zinc-100">Citation Patterns</div>
+                    <div className="text-[10px] text-zinc-500 uppercase tracking-tight">Detect self-citation &amp; citation cartels</div>
+                  </td>
+                  <td className="p-6 text-center">
+                    <div className="flex justify-center"><X className="h-4 w-4 text-zinc-300" /></div>
+                  </td>
+                  <td className="p-6 text-center">
+                    <div className="flex justify-center text-[var(--primary)] font-bold gap-2">
+                      <Check className="h-4 w-4" />
+                    </div>
+                  </td>
+                </tr>
+                <tr className="border-b border-zinc-100 dark:border-zinc-800">
+                  <td className="p-6">
+                    <div className="font-bold text-zinc-900 dark:text-zinc-100">Version History</div>
+                    <div className="text-[10px] text-zinc-500 uppercase tracking-tight">Detect title/author changes across versions</div>
+                  </td>
+                  <td className="p-6 text-center">
+                    <div className="flex justify-center"><X className="h-4 w-4 text-zinc-300" /></div>
+                  </td>
+                  <td className="p-6 text-center">
+                    <div className="flex justify-center text-[var(--primary)] font-bold gap-2">
+                      <Check className="h-4 w-4" />
+                    </div>
+                  </td>
+                </tr>
+                <tr className="border-b border-zinc-100 dark:border-zinc-800">
+                  <td className="p-6">
+                    <div className="font-bold text-zinc-900 dark:text-zinc-100">Related Papers</div>
+                    <div className="text-[10px] text-zinc-500 uppercase tracking-tight">Similar papers while you wait</div>
                   </td>
                   <td className="p-6 text-center">
                     <div className="flex justify-center"><X className="h-4 w-4 text-zinc-300" /></div>
@@ -246,7 +274,7 @@ export default function PricingPage() {
                     <div className="text-[10px] text-zinc-500 uppercase tracking-tight">Privacy and security tier</div>
                   </td>
                   <td className="p-6 text-center text-zinc-600 dark:text-zinc-400 font-bold">30-Day Retention</td>
-                  <td className="p-6 text-center text-zinc-900 dark:text-zinc-100 font-bold">30-Day Retention</td>
+                  <td className="p-6 text-center text-zinc-900 dark:text-zinc-100 font-bold">60-Day Retention</td>
                 </tr>
               </tbody>
             </table>

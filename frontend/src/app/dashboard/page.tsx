@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { keysApi, scansApi, creditsApi, getToken, getUserEmail, setPreferredApiKey } from "@/lib/api";
+import { keysApi, scansApi, creditsApi, getToken, getUserEmail, setPreferredApiKey, clearToken } from "@/lib/api";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   Copy,
@@ -97,8 +97,22 @@ export default function DashboardPage() {
       setScans(scansData.items);
       if (keysData.length > 0) {
         setPreferredApiKey(keysData[0].id);
+        const revealed: Record<string, string> = {};
+        await Promise.all(keysData.map(async (k) => {
+          try {
+            const r = await keysApi.reveal(k.id);
+            if (r.key) revealed[k.id] = r.key;
+          } catch {}
+        }));
+        setRevealedKeys(revealed);
       }
     } catch (err) {
+      const msg = err instanceof Error ? err.message : "";
+      if (msg.toLowerCase().includes("token") || msg.toLowerCase().includes("expired") || msg.toLowerCase().includes("unauthorized")) {
+        clearToken();
+        router.push("/login");
+        return;
+      }
       console.error("Failed to load data:", err);
     } finally {
       setLoading(false);
@@ -266,7 +280,7 @@ export default function DashboardPage() {
                         <div className="flex items-center gap-2">
                           <div className="flex-1 bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-100 dark:border-zinc-800 rounded px-3 py-2 flex items-center justify-between gap-4 font-mono text-xs">
                             <span className="text-zinc-400 select-none">
-                              {showRevealed[key.id] ? revealedKeys[key.id] || "••••••••••••••••" : "at-••••••••" + key.id.slice(-4)}
+                              {showRevealed[key.id] ? revealedKeys[key.id] || "••••••••••••••••" : (revealedKeys[key.id] ? revealedKeys[key.id].slice(0, 9) + "••••••••" + revealedKeys[key.id].slice(-4) : "••••••••••••••••")}
                             </span>
                             <div className="flex items-center gap-1 shrink-0">
                               <button

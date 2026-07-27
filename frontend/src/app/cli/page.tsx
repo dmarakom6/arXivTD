@@ -41,6 +41,12 @@ const COMMANDS = [
     type: "System",
     description: "Retrieves current credit balance and consumption metrics.",
   },
+  {
+    cmd: "history",
+    usage: "arxivtd history",
+    type: "Review",
+    description: "Shows your recent scans with trust scores, titles, and processing times.",
+  },
 ];
 
 const primaryColor = "var(--primary)";

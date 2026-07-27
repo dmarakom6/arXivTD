@@ -2,12 +2,12 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useRouter, useParams } from "next/navigation";
-import { getToken, scansApi, GraphResponse } from "@/lib/api";
+import { getToken, scansApi, GraphResponse, similarApi } from "@/lib/api";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Search, GitBranch, Clock, AlertTriangle,
   CheckCircle, XCircle, Download, ExternalLink, Loader2, Network, Copy,
-  Brain, Shield, User, Cpu, Code, MousePointerClick
+  Brain, Shield, User, Cpu, Code, MousePointerClick, GitCommit
 } from "lucide-react";
 import { CitationGraph } from "@/components/CitationGraph";
 
@@ -45,6 +45,31 @@ interface ScanResult {
     ai_detection?: {
       probability: number;
       suspicious_segments?: string[];
+    };
+    citation_patterns?: {
+      total_citations: number;
+      self_citation_rate: number;
+      clustering_score: number;
+      temporal_anomaly_score: number;
+      top_citing_authors: Array<{
+        author: string;
+        count: number;
+        rate: number;
+      }>;
+      reciprocal_pairs: Array<[string, string]>;
+    };
+    version_changes?: {
+      total_versions: number;
+      has_title_changes: boolean;
+      has_author_changes: boolean;
+      has_content_removal: boolean;
+      changes: Array<{
+        field: string;
+        from_version: number;
+        to_version: number;
+        description: string;
+        severity: string;
+      }>;
     };
     flags: Array<{
       type: string;
@@ -88,6 +113,8 @@ export default function ScanPage() {
   const [graphAttempted, setGraphAttempted] = useState(false);
   const graphRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
+  const [relatedPapers, setRelatedPapers] = useState<Array<{ title: string; arxiv_id: string; authors: string[] }>>([]);
+  const [relatedLoading, setRelatedLoading] = useState(false);
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -119,6 +146,17 @@ export default function ScanPage() {
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
   }, [params.id, router]);
+
+  // Fetch related papers after scan loads
+  useEffect(() => {
+    if (!scan?.result_json?.arxiv_id) return;
+    const arxivId = scan.result_json.arxiv_id;
+    setRelatedLoading(true);
+    similarApi.get(arxivId)
+      .then((data) => setRelatedPapers(data.papers || []))
+      .catch(() => setRelatedPapers([]))
+      .finally(() => setRelatedLoading(false));
+  }, [scan?.result_json?.arxiv_id]);
 
   const handleExport = () => {
     if (!scan?.result_json) return;
@@ -202,7 +240,7 @@ export default function ScanPage() {
             <div className={`text-7xl font-bold font-serif leading-none ${getScoreColor(scan.trust_score)}`}>
               {scan.trust_score}
             </div>
-            <div className="text-[10px] font-black uppercase tracking-[0.2em] text-zinc-400 mt-2">Trust Score</div>
+            <div className="text-[11px] font-black uppercase tracking-[0.2em] text-zinc-500 mt-2">Trust Score</div>
           </div>
         </div>
 
@@ -234,7 +272,7 @@ export default function ScanPage() {
               {result.scan_mode === 'deep' ? 'Citation Integrity' : 'Citation Validation'}
             </h3>
             {result.citations_validated && (
-              <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400">
+              <div className="text-[11px] font-black uppercase tracking-widest text-zinc-500">
                 {result.citations_validated.total} Total Citations Identified
               </div>
             )}
@@ -245,23 +283,23 @@ export default function ScanPage() {
               <div className={`grid ${result.scan_mode === 'deep' ? 'grid-cols-3' : 'grid-cols-3 md:gap-8'} gap-4`}>
                 <div className={`p-4 border border-zinc-100 dark:border-zinc-800 rounded-sm ${result.scan_mode === 'basic' ? 'bg-zinc-50/50 dark:bg-white/5' : ''}`}>
                   <div className={`${result.scan_mode === 'basic' ? 'text-3xl' : 'text-2xl'} font-bold text-emerald-600 mb-0.5`}>{result.citations_validated.found}</div>
-                  <div className="text-[10px] uppercase font-black tracking-widest text-zinc-400 leading-none">Verified Assets</div>
+                  <div className="text-[11px] uppercase font-black tracking-widest text-zinc-500 leading-none">Verified Assets</div>
                 </div>
                 <div className={`p-4 border border-zinc-100 dark:border-zinc-800 rounded-sm ${result.scan_mode === 'basic' ? 'bg-zinc-50/50 dark:bg-white/5' : ''}`}>
                   <div className={`${result.scan_mode === 'basic' ? 'text-3xl' : 'text-2xl'} font-bold text-rose-600 mb-0.5`}>{result.citations_validated.missing}</div>
-                  <div className="text-[10px] uppercase font-black tracking-widest text-zinc-400 leading-none">Missing/Invalid</div>
+                  <div className="text-[11px] uppercase font-black tracking-widest text-zinc-500 leading-none">Missing/Invalid</div>
                 </div>
                 <div className={`p-4 border border-zinc-100 dark:border-zinc-800 rounded-sm ${result.scan_mode === 'basic' ? 'bg-zinc-50/50 dark:bg-white/5' : ''}`}>
                   <div className={`${result.scan_mode === 'basic' ? 'text-3xl' : 'text-2xl'} font-bold ${result.citations_validated.hallucination_rate < 0.1 ? "text-emerald-600" : "text-amber-600"} mb-0.5`}>
                     {(result.citations_validated.hallucination_rate * 100).toFixed(1)}%
                   </div>
-                  <div className="text-[10px] uppercase font-black tracking-widest text-zinc-400 leading-none">Anomaly Rate</div>
+                  <div className="text-[11px] uppercase font-black tracking-widest text-zinc-500 leading-none">Anomaly Rate</div>
                 </div>
               </div>
 
               <div className={`grid ${result.scan_mode === 'deep' ? 'grid-cols-1' : 'md:grid-cols-2'} gap-6 items-start pt-2`}>
                 <div className="space-y-3">
-                  <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-zinc-400">Analysis Summary</h4>
+                  <h4 className="text-[11px] font-black uppercase tracking-[0.2em] text-zinc-500">Analysis Summary</h4>
                   <p className="text-sm text-zinc-600 dark:text-zinc-400 leading-relaxed font-medium italic max-w-2xl">
                     {result.citations_validated.missing === 0
                       ? "A comprehensive audit confirms all cited references are verifiable within recognized scholarly repositories. No evidence of citation hallucination was found."
@@ -271,7 +309,7 @@ export default function ScanPage() {
                 </div>
                 {result.scan_mode === 'basic' && (
                   <div className="p-4 bg-zinc-900 rounded-sm border border-zinc-800 self-center">
-                    <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-2">Verification Confidence</div>
+                    <div className="text-[11px] font-black uppercase tracking-widest text-zinc-500 mb-2">Verification Confidence</div>
                     <div className="flex items-center gap-4">
                       <div className="flex-1 h-1 bg-zinc-800 rounded-full overflow-hidden">
                         <div
@@ -290,7 +328,7 @@ export default function ScanPage() {
           ) : (
             <div className="py-12 flex flex-col items-center justify-center border border-dashed border-zinc-200 dark:border-zinc-800 rounded-lg bg-zinc-50/50 dark:bg-white/5">
               <AlertTriangle className="h-8 w-8 text-zinc-300 mb-3" />
-              <p className="text-sm text-zinc-400 font-medium italic">Verification data unavailable for this profile tier.</p>
+              <p className="text-sm text-zinc-500 font-medium italic">Verification data unavailable for this profile tier.</p>
             </div>
           )}
         </div>
@@ -300,7 +338,7 @@ export default function ScanPage() {
           <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg p-6 flex flex-col">
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-lg font-bold font-serif text-zinc-900 dark:text-zinc-100">AI Origin Probability</h3>
-              <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400 opacity-0 select-none">
+              <div className="text-[11px] font-black uppercase tracking-widest text-zinc-400 opacity-0 select-none">
                 Control
               </div>
             </div>
@@ -349,7 +387,7 @@ export default function ScanPage() {
             ) : (
               <div className="py-12 flex flex-col items-center justify-center border border-dashed border-zinc-200 dark:border-zinc-800 rounded-lg bg-zinc-50/50 dark:bg-white/5 h-full">
                 <Cpu className="h-8 w-8 text-zinc-300 mb-3" />
-                <p className="text-sm text-zinc-400 font-medium italic text-center px-4">
+                <p className="text-sm text-zinc-500 font-medium italic text-center px-4">
                   Neural analysis requires an institutional profile.
                 </p>
               </div>
@@ -358,13 +396,131 @@ export default function ScanPage() {
         )}
       </div>
 
+      {/* Citation Patterns - Deep Only */}
+      {result.scan_mode === 'deep' && result.citation_patterns && (
+        <div className="mt-8 bg-white dark:bg-zinc-900/50 border border-zinc-200 dark:border-zinc-800 rounded-lg p-6">
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="text-lg font-bold font-serif text-zinc-900 dark:text-zinc-100">Citation Patterns</h3>
+            <div className="text-[11px] font-black uppercase tracking-widest text-zinc-500">
+              {result.citation_patterns.total_citations} Total Citations
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-4 mb-6">
+            <div className="p-4 border border-zinc-100 dark:border-zinc-800 rounded-sm">
+              <div className={`text-2xl font-bold mb-0.5 ${result.citation_patterns.self_citation_rate < 0.15 ? "text-emerald-600" : result.citation_patterns.self_citation_rate < 0.3 ? "text-amber-600" : "text-rose-600"}`}>
+                {(result.citation_patterns.self_citation_rate * 100).toFixed(1)}%
+              </div>
+              <div className="text-[11px] uppercase font-black tracking-widest text-zinc-500 leading-none">Self-Citation Rate</div>
+              <div className="text-[10px] text-zinc-400 dark:text-zinc-500 mt-1.5 leading-snug">How often authors cite their own work. Rates above 15% may indicate circular referencing or citation manipulation.</div>
+            </div>
+            <div className="p-4 border border-zinc-100 dark:border-zinc-800 rounded-sm">
+              <div className={`text-2xl font-bold mb-0.5 ${result.citation_patterns.clustering_score < 0.3 ? "text-emerald-600" : result.citation_patterns.clustering_score < 0.6 ? "text-amber-600" : "text-rose-600"}`}>
+                {result.citation_patterns.clustering_score.toFixed(2)}
+              </div>
+              <div className="text-[11px] uppercase font-black tracking-widest text-zinc-500 leading-none">Clustering Score</div>
+              <div className="text-[10px] text-zinc-400 dark:text-zinc-500 mt-1.5 leading-snug">Herfindahl index measuring citation concentration. High scores mean citations come from a small, tight group — potential citation ring indicator.</div>
+            </div>
+            <div className="p-4 border border-zinc-100 dark:border-zinc-800 rounded-sm">
+              <div className={`text-2xl font-bold mb-0.5 ${result.citation_patterns.temporal_anomaly_score < 0.3 ? "text-emerald-600" : result.citation_patterns.temporal_anomaly_score < 0.6 ? "text-amber-600" : "text-rose-600"}`}>
+                {result.citation_patterns.temporal_anomaly_score.toFixed(2)}
+              </div>
+              <div className="text-[11px] uppercase font-black tracking-widest text-zinc-500 leading-none">Temporal Anomaly</div>
+              <div className="text-[10px] text-zinc-400 dark:text-zinc-500 mt-1.5 leading-snug">Detects unusual bursts of citations in a short time window. Spikes may suggest coordinated or inauthentic citation activity.</div>
+            </div>
+          </div>
+
+          {result.citation_patterns.top_citing_authors && result.citation_patterns.top_citing_authors.length > 0 && (
+            <div>
+              <h4 className="text-[11px] font-black uppercase tracking-[0.2em] text-zinc-500 mb-3">Top Citing Authors</h4>
+              <div className="space-y-2">
+                {result.citation_patterns.top_citing_authors.filter(a => a.rate > 0.05).slice(0, 5).map((author, idx) => (
+                  <div key={idx} className="flex justify-between items-center p-3 border border-zinc-100 dark:border-zinc-800 rounded-sm">
+                    <span className="text-sm text-zinc-800 dark:text-zinc-200 font-medium">{author.author}</span>
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs font-bold text-zinc-500">{author.count} citations</span>
+                      <span className="text-xs font-mono text-zinc-500">{(author.rate * 100).toFixed(1)}%</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {result.citation_patterns.reciprocal_pairs && result.citation_patterns.reciprocal_pairs.length > 0 && (
+            <div className="mt-4 pt-4 border-t border-zinc-100 dark:border-zinc-800">
+              <h4 className="text-[11px] font-black uppercase tracking-[0.2em] text-zinc-500 mb-2">Reciprocal Citation Pairs</h4>
+              <div className="flex flex-wrap gap-2">
+                {result.citation_patterns.reciprocal_pairs.slice(0, 5).map((pair, idx) => (
+                  <span key={idx} className="text-xs font-mono bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 px-2 py-1 rounded">
+                    {pair[0]} ↔ {pair[1]}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Version History - Deep Only */}
+      {result.scan_mode === 'deep' && result.version_changes && (
+        <div className="mt-8 bg-white dark:bg-zinc-900/50 border border-zinc-200 dark:border-zinc-800 rounded-lg p-6">
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="text-lg font-bold font-serif text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
+              <GitCommit className="h-5 w-5 text-zinc-400" />
+              Version History
+            </h3>
+            <div className="text-[11px] font-black uppercase tracking-widest text-zinc-500">
+              {result.version_changes.total_versions} Versions
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2 mb-6">
+            {result.version_changes.has_title_changes && (
+              <span className="text-[11px] font-bold px-2.5 py-1 bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 rounded">Title Changed</span>
+            )}
+            {result.version_changes.has_author_changes && (
+              <span className="text-[11px] font-bold px-2.5 py-1 bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 rounded">Authors Changed</span>
+            )}
+            {result.version_changes.has_content_removal && (
+              <span className="text-[11px] font-bold px-2.5 py-1 bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-400 rounded">Content Removed</span>
+            )}
+            {!result.version_changes.has_title_changes && !result.version_changes.has_author_changes && !result.version_changes.has_content_removal && (
+              <span className="text-[11px] font-bold px-2.5 py-1 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 rounded">No Destructive Changes</span>
+            )}
+          </div>
+
+          {result.version_changes.changes && result.version_changes.changes.length > 0 ? (
+            <div className="space-y-2">
+              {result.version_changes.changes.map((change, idx) => (
+                <div key={idx} className="p-4 border border-zinc-100 dark:border-zinc-800 rounded flex items-start gap-3">
+                  <div className={`mt-1.5 h-2 w-2 rounded-full shrink-0 ${change.severity === "high" ? "bg-rose-600" : change.severity === "medium" ? "bg-amber-600" : "bg-zinc-400"}`} />
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between">
+                      <div className="text-[11px] font-black uppercase text-zinc-500 tracking-widest">{change.field}</div>
+                      <div className="text-[11px] font-mono text-zinc-500">v{change.from_version} → v{change.to_version}</div>
+                    </div>
+                    <div className="text-sm text-zinc-700 dark:text-zinc-300 mt-1 leading-relaxed">{change.description}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="py-8 flex flex-col items-center justify-center border border-dashed border-zinc-200 dark:border-zinc-800 rounded-lg bg-zinc-50/50 dark:bg-white/5">
+              <CheckCircle className="h-8 w-8 text-emerald-400 mb-3" />
+              <p className="text-sm text-zinc-500 font-medium italic">No tracked changes across versions.</p>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Code Provenance Section - Deep Only */}
       {result.scan_mode === 'deep' && (
         <div className="mt-8 bg-zinc-50/50 dark:bg-white/5 rounded-lg border border-zinc-200 dark:border-zinc-800 p-6">
           <div className="flex items-center justify-between mb-6">
             <h3 className="text-lg font-bold font-serif text-zinc-900 dark:text-zinc-100">Code Provenance</h3>
             {result.code_provenance && result.code_provenance.repositories.length > 0 && (
-              <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400">
+              <div className="text-[11px] font-black uppercase tracking-widest text-zinc-500">
                 {result.code_provenance.repositories.length} Verified Repositories
               </div>
             )}
@@ -383,10 +539,10 @@ export default function ScanPage() {
                     <ExternalLink className="h-3 w-3 text-zinc-300 group-hover:text-zinc-900" />
                   </div>
                   <div className="flex items-center gap-3">
-                    <span className="text-[10px] font-bold px-2 py-0.5 bg-zinc-100 dark:bg-zinc-800 text-zinc-500 rounded uppercase">
+                    <span className="text-[11px] font-bold px-2 py-0.5 bg-zinc-100 dark:bg-zinc-800 text-zinc-500 rounded uppercase">
                       {repo.license}
                     </span>
-                    <span className="text-[10px] font-bold text-zinc-400">★ {repo.stars}</span>
+                    <span className="text-[11px] font-bold text-zinc-500">★ {repo.stars}</span>
                   </div>
                 </div>
               ))}
@@ -394,12 +550,12 @@ export default function ScanPage() {
           ) : result.code_provenance ? (
             <div className="py-12 flex flex-col items-center justify-center border border-dashed border-zinc-200 dark:border-zinc-800 rounded-lg bg-zinc-50/50 dark:bg-white/5">
               <Code className="h-10 w-10 text-zinc-300 mb-3" />
-              <p className="text-sm text-zinc-400 font-medium italic">No snippets found.</p>
+              <p className="text-sm text-zinc-500 font-medium italic">No snippets found.</p>
             </div>
           ) : (
             <div className="py-12 flex flex-col items-center justify-center border border-dashed border-zinc-200 dark:border-zinc-800 rounded-lg bg-zinc-50/50 dark:bg-white/5 text-center">
               <Shield className="h-10 w-10 text-zinc-300 mb-3" />
-              <p className="text-sm text-zinc-400 font-medium italic max-w-xs">
+              <p className="text-sm text-zinc-500 font-medium italic max-w-xs">
                 Repository matching is restricted to deeper institutional analysis profiles.
               </p>
             </div>
@@ -412,7 +568,7 @@ export default function ScanPage() {
         <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg p-6">
           <div className="flex items-center justify-between mb-6">
             <h3 className="text-lg font-bold font-serif text-zinc-900 dark:text-zinc-100">System Alerts</h3>
-            <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400">
+            <div className="text-[11px] font-black uppercase tracking-widest text-zinc-500">
               {result.flags?.length || 0} Alert{result.flags?.length !== 1 ? 's' : ''}
             </div>
           </div>
@@ -422,7 +578,7 @@ export default function ScanPage() {
                 <div key={idx} className="p-4 border border-zinc-200 dark:border-zinc-800 rounded flex gap-4 bg-white dark:bg-zinc-900">
                   <div className={`mt-1.5 h-2 w-2 rounded-full shrink-0 ${flag.severity === "high" ? "bg-rose-600" : "bg-amber-600"}`} />
                   <div>
-                    <div className="text-[10px] font-black uppercase text-zinc-400 tracking-widest mb-1">{flag.type}</div>
+                    <div className="text-[11px] font-black uppercase text-zinc-500 tracking-widest mb-1">{flag.type}</div>
                     <div className="text-sm font-medium text-zinc-800 dark:text-zinc-200 leading-relaxed">{flag.message}</div>
                   </div>
                 </div>
@@ -439,7 +595,7 @@ export default function ScanPage() {
           <div>
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-lg font-bold font-serif text-zinc-900 dark:text-zinc-100">Audit Metadata</h3>
-              <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400">
+              <div className="text-[11px] font-black uppercase tracking-widest text-zinc-500">
                 System Registry
               </div>
             </div>
@@ -455,10 +611,10 @@ export default function ScanPage() {
               <div className="flex justify-between border-b border-zinc-100 dark:border-zinc-800 pb-0">
                 <span className="text-zinc-500 dark:text-zinc-400 uppercase">Scan ID</span>
                 <div className="flex items-center gap-2">
-                  <span className="text-zinc-400 dark:text-zinc-500 truncate max-w-[120px]">{scan.id}</span>
+                  <span className="text-zinc-500 dark:text-zinc-400 truncate max-w-[120px]">{scan.id}</span>
                   <button
                     onClick={() => copyToClipboard(scan.id)}
-                    className="text-zinc-400 hover:text-[var(--primary)] transition-colors"
+                    className="text-zinc-500 hover:text-[var(--primary)] transition-colors"
                     title="Copy ID"
                   >
                     {copied ? <CheckCircle className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
@@ -470,13 +626,13 @@ export default function ScanPage() {
         </div>
       </div>
 
-      {/* Citation Graph - Cleaner Toggle - Deep Only */}
-      {result.scan_mode === 'deep' && isClaudeModel(scan.model_used) && (
+      {/* Citation Graph - Clean Toggle - Claude Only */}
+      {isClaudeModel(scan.model_used) && result.scan_mode === 'deep' && (
         <div className="mt-16 border-t pt-12" ref={graphRef}>
           <div className="flex items-center justify-between mb-8">
             <div className="flex items-center gap-3">
               <h3 className="text-xl font-bold font-serif text-zinc-900 dark:text-zinc-100">Structural Context</h3>
-              <span className="text-[10px] font-bold px-2 py-0.5 bg-[var(--primary)] text-white rounded uppercase tracking-widest">Interactive Graph</span>
+              <span className="text-[11px] font-bold px-2 py-0.5 bg-[var(--primary)] text-white rounded uppercase tracking-widest">Interactive Graph</span>
             </div>
             {!graphData && !graphLoading && (
               <button
@@ -518,7 +674,7 @@ export default function ScanPage() {
               </button>
             )}
             {graphData && (
-              <div className="hidden md:flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-zinc-400">
+              <div className="hidden md:flex items-center gap-2 text-[11px] font-black uppercase tracking-widest text-zinc-500">
                 <MousePointerClick className="h-3 w-3 text-[var(--primary)]" />
                 <span>Click nodes to expand the graph</span>
               </div>
@@ -575,12 +731,58 @@ export default function ScanPage() {
             <CitationGraph data={graphData} primaryColor={primaryColor} scannedPaperTitle={result.title} />
           ) : (
             <div className="h-32 flex items-center justify-center border border-dashed border-zinc-200 dark:border-zinc-800 rounded-lg bg-zinc-50/50 dark:bg-white/5">
-              <p className="text-sm text-zinc-400 font-medium">Graph visualization available for deep research profiles.</p>
+              <p className="text-sm text-zinc-500 font-medium">Graph visualization available for deep research profiles.</p>
             </div>
           )}
         </div>
       )}
 
+      {/* Related Papers Section */}
+      {(relatedPapers.length > 0 || relatedLoading) && (
+        <div className="mt-16 border-t pt-12">
+          <div className="flex items-center justify-between mb-8">
+            <h3 className="text-xl font-bold font-serif text-zinc-900 dark:text-zinc-100">Related Papers</h3>
+            <div className="text-[11px] font-black uppercase tracking-widest text-zinc-500">
+              {relatedPapers.length} Found
+            </div>
+          </div>
+
+          {relatedLoading ? (
+            <div className="grid md:grid-cols-3 gap-4">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="p-5 border border-zinc-200 dark:border-zinc-800 rounded-lg animate-pulse">
+                  <div className="h-4 bg-zinc-200 dark:bg-zinc-800 rounded w-3/4 mb-3" />
+                  <div className="h-3 bg-zinc-100 dark:bg-zinc-800 rounded w-1/2 mb-2" />
+                  <div className="h-3 bg-zinc-100 dark:bg-zinc-800 rounded w-1/3" />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="grid md:grid-cols-3 gap-4">
+              {relatedPapers.map((paper) => (
+                <a
+                  key={paper.arxiv_id}
+                  href={`https://arxiv.org/abs/${paper.arxiv_id}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="block p-5 bg-white dark:bg-zinc-900/50 border border-zinc-200 dark:border-zinc-800 rounded-lg hover:border-zinc-300 dark:hover:border-zinc-700 transition-all group shadow-sm"
+                >
+                  <div className="text-sm font-bold text-zinc-900 dark:text-zinc-100 group-hover:text-[var(--primary)] transition-colors line-clamp-2 mb-2">
+                    {paper.title}
+                  </div>
+                  <div className="text-xs text-zinc-500 mb-2 line-clamp-1">
+                    {paper.authors?.join(", ")}
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-mono text-zinc-500">{paper.arxiv_id}</span>
+                    <ExternalLink className="h-3 w-3 text-zinc-400 group-hover:text-zinc-600 shrink-0" />
+                  </div>
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Repository Modal */}
       <AnimatePresence>
@@ -606,7 +808,7 @@ export default function ScanPage() {
 
               <div className="space-y-6">
                 <div>
-                  <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-1">Name</div>
+                  <div className="text-[11px] font-black uppercase tracking-widest text-zinc-500 mb-1">Name</div>
                   <a
                     href={selectedRepo.url}
                     target="_blank"
@@ -620,18 +822,18 @@ export default function ScanPage() {
 
                 <div className="grid grid-cols-2 gap-8 py-6 border-y border-zinc-100 dark:border-zinc-800">
                   <div>
-                    <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-1">License</div>
+                    <div className="text-[11px] font-black uppercase tracking-widest text-zinc-500 mb-1">License</div>
                     <div className="font-bold text-sm">{selectedRepo.license}</div>
                   </div>
                   <div>
-                    <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-1">Stars</div>
+                    <div className="text-[11px] font-black uppercase tracking-widest text-zinc-500 mb-1">Stars</div>
                     <div className="font-bold text-sm">★ {selectedRepo.stars}</div>
                   </div>
                 </div>
 
                 {selectedRepo.path && (
                   <div>
-                    <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-1">Internal Path</div>
+                    <div className="text-[11px] font-black uppercase tracking-widest text-zinc-500 mb-1">Internal Path</div>
                     <div className="font-mono text-xs bg-zinc-50 dark:bg-zinc-800/50 p-3 rounded border border-zinc-100 dark:border-zinc-800 break-all leading-relaxed">
                       {selectedRepo.path}
                     </div>
@@ -640,7 +842,7 @@ export default function ScanPage() {
 
                 {selectedRepo.details && (
                   <div>
-                    <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-1">Provenance Notes</div>
+                    <div className="text-[11px] font-black uppercase tracking-widest text-zinc-500 mb-1">Provenance Notes</div>
                     <div className="text-sm text-zinc-600 dark:text-zinc-400 leading-relaxed italic">
                       "{selectedRepo.details}"
                     </div>

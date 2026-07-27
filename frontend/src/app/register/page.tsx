@@ -214,11 +214,12 @@ export default function RegisterPage() {
             </div>
 
             {/* Turnstile Widget Placeholder */}
-            <div className="mb-6 flex justify-center">
+            <div className="mb-6 flex justify-center" suppressHydrationWarning>
               <div 
                 className="cf-turnstile" 
                 data-sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || "1x00000000000000000000AA"}
                 data-callback="onTurnstileSuccess"
+                suppressHydrationWarning
               />
               <script 
                 src="https://challenges.cloudflare.com/turnstile/v0/api.js" 

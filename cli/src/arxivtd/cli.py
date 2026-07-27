@@ -4,13 +4,14 @@ import os
 import sys
 import json
 import time
+import random
 import threading
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import questionary
 from questionary import Choice, Separator
 import requests
-import sys
 
 
 def is_interactive() -> bool:
@@ -21,11 +22,18 @@ CONFIG_DIR = Path.home() / ".arxivtd"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
 API_BASE_URL = os.environ.get("ARXIVTD_API_URL", "https://arxivtd.com/api/v1")
+APP_URL = os.environ.get("ARXIVTD_APP_URL", "https://arxivtd.com")
 RATE_LIMIT = 5
 RATE_WINDOW = 1800
 
 API_KEY_PROMPT = "Enter your API Key (from dashboard)"
 GROBID_URL_PROMPT = "Enter Grobid URL"
+
+# Average scan times for ETA estimation (seconds)
+AVG_SCAN_TIMES = {
+    "basic": 15,
+    "deep": 45,
+}
 
 
 class RateLimiter:
@@ -55,38 +63,243 @@ class RateLimiter:
 
 rate_limiter = RateLimiter()
 
-_spinner_active = False
-_spinner_thread = None
+
+_LOCAL_QUOTES = [
+    '"The only way to do great work is to love what you do." — Steve Jobs',
+    '"In the middle of difficulty lies opportunity." — Albert Einstein',
+    '"Talk is cheap. Show me the code." — Linus Torvalds',
+    '"First, solve the problem. Then, write the code." — John Johnson',
+    '"Any sufficiently advanced technology is indistinguishable from magic." — Arthur C. Clarke',
+    '"Simplicity is the soul of efficiency." — Austin Freeman',
+    '"Make it work, make it right, make it fast." — Kent Beck',
+    '"Programs must be written for people to read." — Harold Abelson',
+    '"The best error message is the one that never shows up." — Thomas Fuchs',
+    '"Code is like humor. When you have to explain it, it\'s bad." — Cory House',
+    '"Fix the cause, not the symptom." — Steve Maguire',
+    '"Optimism is an occupational hazard of programming." — Kent Beck',
+    '"Deleted code is debugged code." — Jeff Sickel',
+    '"The most dangerous phrase is: We\'ve always done it this way." — Grace Hopper',
+    '"Perfection is achieved not when there is nothing more to add, but when there is nothing left to take away." — Antoine de Saint-Exupéry',
+]
 
 
-def _spinner_worker(message: str):
-    symbols = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-    i = 0
-    while _spinner_active:
-        sys.stdout.write(f"\r{message} {symbols[i % len(symbols)]}")
-        sys.stdout.flush()
-        time.sleep(0.1)
-        i += 1
-    sys.stdout.write("\r" + " " * (len(message) + 3) + "\r")
-    sys.stdout.flush()
+def _fetch_quote() -> str:
+    """Fetch a random quote from a free API, falling back to local quotes."""
+    apis = [
+        ("https://dummyjson.com/quotes/random", lambda d: f'"{d["quote"]}" — {d["author"]}'),
+        ("https://zenquotes.io/api/random", lambda d: f'"{d[0]["q"]}" — {d[0]["a"]}'),
+        ("https://api.quotable.io/quotes/random", lambda d: f'"{d[0]["content"]}" — {d[0]["author"]}'),
+    ]
+    for url, parser in apis:
+        try:
+            resp = requests.get(url, timeout=3)
+            if resp.status_code == 200:
+                return parser(resp.json())
+        except Exception:
+            continue
+    return random.choice(_LOCAL_QUOTES)
 
 
-class spinner:
-    def __init__(self, message: str):
+def _fetch_similar_papers(arxiv_id: str) -> list[dict]:
+    """Fetch similar papers from arXiv API."""
+    try:
+        clean_id = arxiv_id.strip()
+        if "/" in clean_id:
+            clean_id = clean_id.split("/")[-1]
+
+        resp = requests.get(
+            f"https://export.arxiv.org/api/query",
+            params={
+                "id_list": clean_id,
+            },
+            headers={
+                "User-Agent": "ArXivTD/1.0 (mailto:support@arxivtd.com)",
+                "Accept": "application/atom+xml",
+            },
+            timeout=10,
+        )
+
+        if resp.status_code != 200 or not resp.text.strip():
+            return []
+
+        root = ET.fromstring(resp.text)
+        ns = {"atom": "http://www.w3.org/2005/Atom"}
+
+        # Extract categories from the paper
+        entry = root.find("atom:entry", ns) or root.find("entry")
+        if entry is None:
+            return []
+
+        categories = []
+        for cat in entry.findall("atom:category", ns) or entry.findall("category"):
+            term = cat.get("term")
+            if term:
+                categories.append(term)
+
+        if not categories:
+            return []
+
+        # Search for related papers using the primary category
+        search_query = f"cat:{categories[0]}"
+        search_resp = requests.get(
+            "https://export.arxiv.org/api/query",
+            params={
+                "search_query": search_query,
+                "start": 0,
+                "max_results": 5,
+                "sortBy": "submittedDate",
+                "sortOrder": "descending",
+            },
+            headers={
+                "User-Agent": "ArXivTD/1.0 (mailto:support@arxivtd.com)",
+                "Accept": "application/atom+xml",
+            },
+            timeout=10,
+        )
+
+        if search_resp.status_code != 200:
+            return []
+
+        search_root = ET.fromstring(search_resp.text)
+        papers = []
+        for e in search_root.findall("atom:entry", ns) or search_root.findall("entry"):
+            title_elem = e.find("atom:title", ns) or e.find("title")
+            id_elem = e.find("atom:id", ns) or e.find("id")
+            if title_elem is not None and id_elem is not None:
+                title = title_elem.text.strip() if title_elem.text else ""
+                paper_id = id_elem.text.strip() if id_elem.text else ""
+                # Extract arXiv ID from URL
+                if "/abs/" in paper_id:
+                    paper_id = paper_id.split("/abs/")[-1]
+                # Skip the paper itself
+                if paper_id == clean_id:
+                    continue
+                papers.append({
+                    "title": title[:80],
+                    "id": paper_id,
+                })
+                if len(papers) >= 3:
+                    break
+
+        return papers
+
+    except Exception:
+        return []
+
+
+class SpinnerWithETA:
+    """Spinner that shows elapsed time, ETA, and periodic quotes."""
+
+    def __init__(self, message: str, mode: str = "basic", arxiv_id: str = ""):
         self.message = message
+        self.mode = mode
+        self.arxiv_id = arxiv_id
+        self._active = False
+        self._thread = None
+        self._start_time = 0
+        self._last_quote_time = 0
+        self._quote_lines = 0
+        self._similar_shown = False
+
+    def _show_quote(self, quote: str):
+        """Display a quote below the spinner, replacing any previous quote."""
+        max_width = 70
+        words = quote.split()
+        wrapped = []
+        current_line = "   💬 "
+        for word in words:
+            if len(current_line) + len(word) + 1 > max_width:
+                wrapped.append(current_line)
+                current_line = "      " + word
+            else:
+                current_line += " " + word if current_line.strip() else word
+        wrapped.append(current_line)
+
+        num_lines = len(wrapped)
+        # Clear old quote area (move down with \n, clear each line)
+        clear_lines = max(num_lines, self._quote_lines)
+        if clear_lines == 0:
+            clear_lines = 1  # At least one line for the quote
+        for _ in range(clear_lines):
+            sys.stdout.write("\n\033[2K")
+
+        # Move back up to spinner line
+        sys.stdout.write(f"\033[{clear_lines}A")
+
+        # Print new quote: for each line, \n down then write text
+        for ql in wrapped:
+            sys.stdout.write(f"\n\033[2K\033[2m{ql}\033[0m")
+
+        # Move back up to spinner line
+        sys.stdout.write(f"\033[{num_lines}A")
+
+        self._quote_lines = num_lines
+        sys.stdout.flush()
+
+    def _worker(self):
+        symbols = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        i = 0
+        avg_time = AVG_SCAN_TIMES.get(self.mode, 20)
+
+        while self._active:
+            elapsed = time.time() - self._start_time
+            elapsed_str = f"{int(elapsed)}s"
+
+            # ETA calculation
+            if elapsed < avg_time:
+                eta = avg_time - elapsed
+                eta_str = f"~{int(eta)}s"
+            else:
+                eta_str = "any moment"
+
+            line = f"\r{self.message} {symbols[i % len(symbols)]}  elapsed: {elapsed_str}  ETA: {eta_str}"
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            time.sleep(0.1)
+            i += 1
+
+            # Show quote every 10 seconds (first quote after 3s)
+            now = time.time()
+            first_quote_shown = self._last_quote_time > 0
+            if (not first_quote_shown and elapsed >= 3) or (first_quote_shown and now - self._last_quote_time >= 10):
+                self._last_quote_time = now
+                quote = _fetch_quote()
+                if quote:
+                    self._show_quote(quote)
+
+            # Show similar papers at 15 seconds
+            if not self._similar_shown and elapsed >= 15 and self.arxiv_id:
+                self._similar_shown = True
+                similar = _fetch_similar_papers(self.arxiv_id)
+                if similar:
+                    sys.stdout.write("\r" + " " * 80 + "\r")
+                    print("   📚 While you wait, check out these related papers:")
+                    for p in similar:
+                        print(f"      • {p['title'][:65]}...")
+                        print(f"        {APP_URL}/scans/new?id={p['id']}")
+                    sys.stdout.flush()
 
     def __enter__(self):
-        global _spinner_active, _spinner_thread
-        _spinner_active = True
-        _spinner_thread = threading.Thread(target=_spinner_worker, args=(self.message,))
-        _spinner_thread.start()
+        self._active = True
+        self._start_time = time.time()
+        self._thread = threading.Thread(target=self._worker, daemon=True)
+        self._thread.start()
         return self
 
     def __exit__(self, *args):
-        global _spinner_active, _spinner_thread
-        _spinner_active = False
-        if _spinner_thread:
-            _spinner_thread.join()
+        self._active = False
+        # Cursor is on spinner line; clear spinner + quote lines below
+        if self._quote_lines > 0:
+            for _ in range(self._quote_lines):
+                sys.stdout.write("\n\033[2K")
+            sys.stdout.write(f"\033[{self._quote_lines}A")
+        sys.stdout.write("\033[2K")
+        sys.stdout.flush()
+        if self._thread:
+            self._thread.join()
+        elapsed = time.time() - self._start_time
+        sys.stdout.write("\r" + " " * 100 + "\r")
+        sys.stdout.flush()
 
 
 def load_config() -> dict:
@@ -161,9 +374,9 @@ def init_cli():
     config = load_config()
     keys = config.get("keys", {})
 
-    print("\n+-------------------------------------------------+")
-    print("|         ArXivTD CLI Setup                      |")
-    print("+-------------------------------------------------+\n")
+    print("\n+---------------------------------------------------+")
+    print("|            ArXivTD CLI Setup                      |")
+    print("+---------------------------------------------------+\n")
 
     if keys:
         print("📌 You already have keys configured:")
@@ -344,9 +557,66 @@ def check_grobid() -> bool:
     grobid_url = get_grobid_url()
     try:
         response = requests.get(f"{grobid_url}/api/health", timeout=5)
+        if response.status_code == 200:
+            return True
+    except Exception:
+        pass
+    try:
+        response = requests.get(f"{grobid_url}/api/status", timeout=5)
         return response.status_code == 200
-    except:
+    except Exception:
         return False
+
+
+def _print_scan_result(result: dict, output_file: Path | None = None):
+    """Print scan results in a nice format."""
+    trust_score = result.get("trust_score", "N/A")
+    title = (result.get("title") or "N/A")[:60]
+    scan_id = result.get("scan_id", "")
+    mode = result.get("scan_mode", "basic")
+    citations = result.get("citations_validated", {})
+    flags = result.get("flags", [])
+
+    # Color code the score
+    if isinstance(trust_score, (int, float)):
+        if trust_score >= 80:
+            score_str = f"\033[92m{trust_score}\033[0m"  # green
+        elif trust_score >= 60:
+            score_str = f"\033[93m{trust_score}\033[0m"  # yellow
+        else:
+            score_str = f"\033[91m{trust_score}\033[0m"  # red
+    else:
+        score_str = str(trust_score)
+
+    print(f"\n{'=' * 60}")
+    print(f"  ✅ Scan Complete")
+    print(f"{'=' * 60}")
+    print(f"  Title:          {title}")
+    print(f"  Trust Score:    {score_str}")
+    print(f"  Mode:           {mode}")
+
+    if citations:
+        total = citations.get("total", 0)
+        found = citations.get("found", 0)
+        missing = citations.get("missing", 0)
+        rate = citations.get("hallucination_rate", 0)
+        print(f"  Citations:      {found}/{total} verified ({missing} missing, {rate:.1%} anomaly)")
+
+    if flags:
+        print(f"  Flags:          {len(flags)} alerts")
+        for f in flags[:3]:
+            sev = f.get("severity", "medium")
+            msg = f.get("message", "")[:55]
+            icon = "🔴" if sev == "high" else "🟡"
+            print(f"    {icon} {msg}")
+
+    if scan_id:
+        print(f"  View:           {APP_URL}/scans/{scan_id}")
+
+    if output_file:
+        print(f"  Saved to:       {output_file}")
+
+    print(f"{'=' * 60}")
 
 
 def scan_arxiv(arxiv_id: str, mode: str = "basic"):
@@ -360,10 +630,10 @@ def scan_arxiv(arxiv_id: str, mode: str = "basic"):
     credits = 3 if mode == "deep" else 1
     print(f"\n📄 Mode: {mode} ({credits} {'credits' if credits > 1 else 'credit'})")
 
-    with spinner("Analyzing paper..."):
+    with SpinnerWithETA("Analyzing paper...", mode=mode, arxiv_id=arxiv_id):
         try:
             headers = {"X-API-Key": api_key}
-            response = requests.get(url, headers=headers)
+            response = requests.get(url, headers=headers, timeout=120)
 
             if response.status_code == 200:
                 rate_limiter.record_request()
@@ -373,10 +643,7 @@ def scan_arxiv(arxiv_id: str, mode: str = "basic"):
                 with open(output_file, "w") as f:
                     json.dump(result, f, indent=2)
 
-                print(f"\n✅ Scan complete! Remaining: {rate_limiter.remaining()}/5\n")
-                print(f"   Trust Score: {result.get('trust_score', 'N/A')}")
-                print(f"   Paper:       {result.get('title', 'N/A')[:50]}...")
-                print(f"   Saved to:    {output_file}")
+                _print_scan_result(result, output_file)
                 return result
             elif response.status_code == 402:
                 print("\n❌ Insufficient credits.")
@@ -386,7 +653,7 @@ def scan_arxiv(arxiv_id: str, mode: str = "basic"):
                 print(f"\n❌ Scan failed: {response.status_code}")
                 try:
                     print(f"   {response.json().get('detail', 'Unknown error')}")
-                except:
+                except Exception:
                     pass
                 sys.exit(1)
 
@@ -415,12 +682,12 @@ def scan_pdf(pdf_path: str, mode: str = "basic"):
         print(f"\n❌ PDF not found: {pdf_path}")
         sys.exit(1)
 
-    with spinner("Analyzing PDF..."):
+    with SpinnerWithETA("Analyzing PDF...", mode=mode):
         try:
             with open(pdf_path, "rb") as f:
                 files = {"file": (os.path.basename(pdf_path), f, "application/pdf")}
                 headers = {"X-API-Key": api_key}
-                response = requests.post(url, files=files, headers=headers)
+                response = requests.post(url, files=files, headers=headers, timeout=120)
 
             if response.status_code == 200:
                 rate_limiter.record_request()
@@ -432,10 +699,7 @@ def scan_pdf(pdf_path: str, mode: str = "basic"):
                 with open(output_file, "w") as f:
                     json.dump(result, f, indent=2)
 
-                print(f"\n✅ Scan complete! Remaining: {rate_limiter.remaining()}/5\n")
-                print(f"   Trust Score: {result.get('trust_score', 'N/A')}")
-                print(f"   Scan ID:     {scan_id}")
-                print(f"   Saved to:    {output_file}")
+                _print_scan_result(result, output_file)
                 return result
             elif response.status_code == 402:
                 print("\n❌ Insufficient credits.")
@@ -443,7 +707,7 @@ def scan_pdf(pdf_path: str, mode: str = "basic"):
                 print(f"\n❌ Scan failed: {response.status_code}")
                 try:
                     print(f"   {response.json().get('detail', 'Unknown error')}")
-                except:
+                except Exception:
                     pass
                 sys.exit(1)
 
@@ -458,15 +722,19 @@ def batch_scan(directory: str, mode: str = "basic"):
         print(f"\n❌ Not a directory: {directory}")
         sys.exit(1)
 
-    pdf_files = list(dir_path.glob("*.pdf"))
+    pdf_files = sorted(dir_path.glob("*.pdf"))
     if len(pdf_files) > 20:
         print(f"\n❌ Batch scanning limited to 20 PDFs at a time.")
         print(f"   Found {len(pdf_files)} PDFs. Split into smaller batches.")
         sys.exit(1)
 
-    if len(pdf_files) <= 5:
-        print(f"\n❌ Batch scanning only works with >5 PDFs.")
-        print(f"   Found {len(pdf_files)} PDFs. Use 'arxivtd scan' instead.")
+    if len(pdf_files) < 5:
+        print(f"\n❌ Batch scanning requires at least 5 PDFs.")
+        print(f"   Found {len(pdf_files)} PDFs in {directory}")
+        sys.exit(1)
+
+    if len(pdf_files) == 0:
+        print(f"\n❌ No PDF files found in {directory}")
         sys.exit(1)
 
     api_key = require_config()
@@ -481,19 +749,26 @@ def batch_scan(directory: str, mode: str = "basic"):
     for i, pdf_file in enumerate(pdf_files, 1):
         print(f"[{i}/{len(pdf_files)}] Scanning: {pdf_file.name}")
 
-        url = f"{API_BASE_URL}/analyze/pdf?mode={mode}"
+        url = f"{API_BASE_URL}/analyze/pdf?mode={mode}&is_batch=true"
         try:
             with open(pdf_file, "rb") as f:
                 files = {"file": (pdf_file.name, f, "application/pdf")}
                 headers = {"X-API-Key": api_key}
-                response = requests.post(url, files=files, headers=headers, timeout=120)
+                response = requests.post(url, files=files, headers=headers, timeout=180)
 
             if response.status_code == 200:
                 result = response.json()
                 results.append(
                     {"file": pdf_file.name, "success": True, "result": result}
                 )
-                print(f"   ✅ Score: {result.get('trust_score', 'N/A')}")
+                score = result.get("trust_score", "N/A")
+                title = (result.get("title") or "")[:40]
+                print(f"   ✅ Score: {score}  {title}")
+            elif response.status_code == 402:
+                results.append(
+                    {"file": pdf_file.name, "success": False, "error": "Insufficient credits"}
+                )
+                print(f"   ❌ Insufficient credits")
             else:
                 results.append(
                     {
@@ -508,11 +783,20 @@ def batch_scan(directory: str, mode: str = "basic"):
             results.append({"file": pdf_file.name, "success": False, "error": str(e)})
             print(f"   ❌ Error: {e}")
 
-    print(f"\n{'=' * 50}")
-    print(
-        f"  Batch Complete: {len([r for r in results if r['success']])}/{len(results)} successful"
-    )
-    print(f"{'=' * 50}")
+    print(f"\n{'=' * 60}")
+    success = [r for r in results if r["success"]]
+    print(f"  Batch Complete: {len(success)}/{len(results)} successful")
+    if success:
+        scores = [r["result"]["trust_score"] for r in success if r["result"].get("trust_score")]
+        if scores:
+            avg = sum(scores) / len(scores)
+            print(f"  Average Trust Score: {avg:.1f}")
+    print(f"{'=' * 60}")
+
+    output_file = dir_path / "batch_results.json"
+    with open(output_file, "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"  Results saved to: {output_file}")
 
 
 def show_graph(paper_id: str):
@@ -528,7 +812,7 @@ def show_graph(paper_id: str):
     )
     label = f"S2:{paper_id[:8]}..." if is_uuid else f"arXiv:{paper_id}"
 
-    with spinner("Fetching citation graph..."):
+    with SpinnerWithETA("Fetching citation graph..."):
         try:
             headers = {"X-API-Key": api_key}
             response = requests.get(endpoint, headers=headers, timeout=30)
@@ -584,7 +868,7 @@ def show_status():
 def show_history():
     require_config()
 
-    with spinner("Loading history..."):
+    with SpinnerWithETA("Loading history..."):
         response = api_request("GET", "/scans")
 
         if response.status_code != 200:
@@ -599,21 +883,46 @@ def show_history():
             return
 
         print(f"\n📜 Scan History ({len(scans)} scans)\n")
-        print(f"   {'ID':<30} {'Paper':<25} {'Score':<8} {'Date'}")
-        print(f"   {'-' * 30} {'-' * 25} {'-' * 8} {'-' * 12}")
 
-        for scan in scans[:10]:
-            scan_id = scan.get("id", "")[:28]
+        for i, scan in enumerate(scans[:15], 1):
+            scan_id = scan.get("id", "")[:8]
             url = scan.get("url", "")
-            paper = url.split("/")[-1] if url else "N/A"
-            paper = paper[:23] + ".." if len(paper) > 25 else paper
-            score = scan.get("result_json", {}).get("trust_score", "N/A")
-            date = scan.get("created_at", "")[:10]
+            paper_id = url.split("/")[-1] if url else "N/A"
 
-            print(f"   {scan_id:<30} {paper:<25} {score:<8} {date}")
+            result_json = scan.get("result_json") or {}
+            title = result_json.get("title", "")[:50] or paper_id
+            score = result_json.get("trust_score", "N/A")
+            mode = result_json.get("scan_mode", "?")
+            date = scan.get("created_at", "")[:10]
+            credits = scan.get("credits_spent", "?")
+
+            # Color code score
+            if isinstance(score, (int, float)):
+                if score >= 80:
+                    score_str = f"\033[92m{score}\033[0m"
+                elif score >= 60:
+                    score_str = f"\033[93m{score}\033[0m"
+                else:
+                    score_str = f"\033[91m{score}\033[0m"
+            else:
+                score_str = str(score)
+
+            print(f"  {i:>2}. [{date}] {mode:>5} | Score: {score_str:>20} | {credits} cr")
+            print(f"      {title}")
+            print(f"      {APP_URL}/scans/{scan.get('id', '')}")
+            if i < len(scans[:15]):
+                print()
 
 
 def main():
+    try:
+        _main()
+    except KeyboardInterrupt:
+        print("\n")
+        sys.exit(130)
+
+
+def _main():
     if len(sys.argv) < 2:
         print("""
 +---------------------------------------------------+
@@ -626,19 +935,19 @@ Commands:
   arxivtd scan --pdf <path> Scan PDF (requires Grobid)
   arxivtd scan --id <arXiv> Scan by arXiv ID (no Grobid needed)
   arxivtd scan --deep       Use deep mode (3 credits)
-  arxivtd batch <dir>      Scan multiple PDFs (>5 files)
-  arxivtd graph <id>       Show citation graph
-  arxivtd status           Show status and credits
-  arxivtd history          Show scan history
-  arxivtd keys             Manage API keys
-  arxivtd --version        Show version
+  arxivtd batch <dir>       Scan multiple PDFs
+  arxivtd graph <id>        Show citation graph
+  arxivtd history           Show scan history
+  arxivtd status            Show status and credits
+  arxivtd keys              Manage API keys
+  arxivtd --version         Show version
 """)
         sys.exit(0)
 
     command = sys.argv[1]
 
     if command == "--version":
-        print("ArXivTD CLI v0.1.0")
+        print("ArXivTD CLI v0.2.0")
         sys.exit(0)
 
     if command == "init":
