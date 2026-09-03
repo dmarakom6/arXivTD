@@ -28,6 +28,13 @@ export async function fetchApi<T>(
   });
 
   if (!response.ok) {
+    if (response.status === 401 && typeof window !== "undefined") {
+      clearToken();
+      if (!window.location.pathname.startsWith("/login")) {
+        window.location.href = "/login";
+      }
+      throw new Error("Session expired. Please log in again.");
+    }
     const error = await response.json().catch(() => ({}));
     throw new Error(error.detail || "An error occurred");
   }

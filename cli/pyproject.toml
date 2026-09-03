@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "arxivtd"
-version = "0.1.0"
+version = "0.2.0"
 description = "ArXiv Trust Delineation - CLI for academic paper analysis"
 readme = "README.md"
 authors = [
@@ -23,7 +23,9 @@ classifiers = [
 ]
 
 dependencies = [
-    "requests>=2.28.0",
+    "requests>=2.31.0,<3",
+    "urllib3>=1.26,<3",
+    "chardet>=3.0.2,<6",
     "questionary>=2.0.0",
 ]
 

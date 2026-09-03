@@ -1,20 +1,60 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { authApi, setToken, setUserEmail, getToken, setApiKey } from "@/lib/api";
 
-function TurnstileListener({ onToken }: { onToken: (token: string) => void }) {
-  useEffect(() => {
-    const handleSuccess = (e: any) => {
-      onToken(e.detail);
+declare global {
+  interface Window {
+    turnstile?: {
+      ready: (cb: () => void) => void;
+      render: (
+        el: string,
+        options: Record<string, unknown>
+      ) => string;
+      remove: (widgetId: string) => void;
     };
-    window.addEventListener('turnstile-success', handleSuccess);
-    return () => window.removeEventListener('turnstile-success', handleSuccess);
-  }, [onToken]);
-  return null;
+  }
+}
+
+const TURNSTILE_SCRIPT_SRC =
+  "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+
+// Load the Turnstile script once (explicit rendering, SPA-correct) and poll
+// until window.turnstile is available. Polling is more reliable than relying on
+// the onload timing of a dynamically-injected script.
+function loadTurnstileScript(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (typeof window === "undefined") {
+      reject(new Error("window is undefined"));
+      return;
+    }
+    if (window.turnstile) {
+      resolve();
+      return;
+    }
+    let script = document.querySelector<HTMLScriptElement>(
+      `script[src="${TURNSTILE_SCRIPT_SRC}"]`
+    );
+    if (!script) {
+      script = document.createElement("script");
+      script.src = TURNSTILE_SCRIPT_SRC;
+      script.async = true;
+      document.head.appendChild(script);
+    }
+    const started = Date.now();
+    const timer = setInterval(() => {
+      if (window.turnstile) {
+        clearInterval(timer);
+        resolve();
+      } else if (Date.now() - started > 10000) {
+        clearInterval(timer);
+        reject(new Error("Timed out waiting for Turnstile to load"));
+      }
+    }, 100);
+  });
 }
 
 export default function RegisterPage() {
@@ -31,6 +71,8 @@ export default function RegisterPage() {
   const primaryColor = "var(--primary)";
 
   const [turnstileToken, setTurnstileToken] = useState<string>("");
+  const turnstileRef = useRef<HTMLDivElement>(null);
+  const widgetIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (getToken()) {
@@ -38,6 +80,52 @@ export default function RegisterPage() {
       // For now, if we have a token, we check if we were redirected back to register, which shouldn't happen unless token is problematic or user wants another account.
     }
   }, [router]);
+
+  // Render the Turnstile widget explicitly. Implicit rendering does not work
+  // reliably inside a Next.js SPA (the api.js scans for .cf-turnstile divs
+  // before React mounts them), so we control rendering via the JS API.
+  useEffect(() => {
+    if (step !== "register") return;
+    const sitekey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
+    if (!sitekey || !turnstileRef.current) return;
+
+    let cancelled = false;
+    loadTurnstileScript()
+      .then(() => {
+        if (cancelled || !window.turnstile || !turnstileRef.current) return;
+        // Remove any prior widget to avoid duplicate renders on re-run.
+        if (widgetIdRef.current) {
+          try {
+            window.turnstile.remove(widgetIdRef.current);
+          } catch {
+            /* ignore */
+          }
+        }
+        widgetIdRef.current = window.turnstile.render("#turnstile-widget", {
+          sitekey,
+          callback: (token: string) => setTurnstileToken(token),
+          "error-callback": () => setTurnstileToken(""),
+          "expired-callback": () => setTurnstileToken(""),
+        });
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setError("Unable to load verification. Please refresh and try again.");
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      if (widgetIdRef.current && typeof window !== "undefined" && window.turnstile) {
+        try {
+          window.turnstile.remove(widgetIdRef.current);
+        } catch {
+          /* ignore */
+        }
+        widgetIdRef.current = null;
+      }
+    };
+  }, [step]);
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -213,32 +301,10 @@ export default function RegisterPage() {
               />
             </div>
 
-            {/* Turnstile Widget Placeholder */}
+            {/* Turnstile Widget (explicit rendering) */}
             <div className="mb-6 flex justify-center" suppressHydrationWarning>
-              <div 
-                className="cf-turnstile" 
-                data-sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || "1x00000000000000000000AA"}
-                data-callback="onTurnstileSuccess"
-                suppressHydrationWarning
-              />
-              <script 
-                src="https://challenges.cloudflare.com/turnstile/v0/api.js" 
-                async 
-                defer 
-              />
-              {/* Client-side callback helper */}
-              <script dangerouslySetInnerHTML={{
-                __html: `
-                  window.onTurnstileSuccess = function(token) {
-                    const event = new CustomEvent('turnstile-success', { detail: token });
-                    window.dispatchEvent(event);
-                  };
-                `
-              }} />
+              <div id="turnstile-widget" ref={turnstileRef} suppressHydrationWarning />
             </div>
-            
-            {/* Listen for the event in React */}
-            <TurnstileListener onToken={setTurnstileToken} />
 
             {error && (
               <p className="text-red-600 text-sm mb-4">{error}</p>

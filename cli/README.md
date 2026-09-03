@@ -25,6 +25,25 @@ arxivtd init
 # Prompts:
 # - Enter your API Key (from dashboard)
 # - Enter Grobid URL (e.g., http://localhost:8070)
+# - Enter API URL (defaults to https://arxivtd.com/api/v1)
+```
+
+## API URL Resolution
+
+The CLI resolves the backend URL in this order:
+
+1. **Environment variable**: `ARXIVTD_API_URL` (e.g. `http://localhost:8005/api/v1`)
+2. **Config file**: `~/.arxivtd/config.json` → `api_url` field (set via `arxivtd init`)
+3. **Remote default**: `https://arxivtd.com/api/v1`
+
+If the configured host is unreachable (no DNS, server down) and isn't a loopback
+address, the CLI probes common local dev ports (`localhost:8005`, `8000`, `8001`)
+and saves the first hit to `~/.arxivtd/config.json` for future runs.
+
+Override for a single run without changing config:
+
+```bash
+ARXIVTD_API_URL=http://localhost:8005/api/v1 arxivtd scan --id 2608.18534
 ```
 
 ## Usage

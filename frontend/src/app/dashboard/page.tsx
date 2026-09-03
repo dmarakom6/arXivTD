@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { keysApi, scansApi, creditsApi, getToken, getUserEmail, setPreferredApiKey, clearToken } from "@/lib/api";
+import { keysApi, scansApi, creditsApi, getToken, getUserEmail, setPreferredApiKey, clearToken, fetchApi } from "@/lib/api";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   Copy,
@@ -77,6 +77,7 @@ export default function DashboardPage() {
   const [rotatingId, setRotatingId] = useState<string | null>(null);
   const [showRotateModal, setShowRotateModal] = useState(false);
   const [keyToRotate, setKeyToRotate] = useState<APIKey | null>(null);
+  const [hasS2Key, setHasS2Key] = useState(false);
 
   useEffect(() => {
     const token = getToken();
@@ -106,6 +107,11 @@ export default function DashboardPage() {
         }));
         setRevealedKeys(revealed);
       }
+      // Check S2 key status
+      try {
+        const s2Data = await fetchApi<{ has_s2_key: boolean }>("/user/s2-key");
+        setHasS2Key(s2Data.has_s2_key);
+      } catch {}
     } catch (err) {
       const msg = err instanceof Error ? err.message : "";
       if (msg.toLowerCase().includes("token") || msg.toLowerCase().includes("expired") || msg.toLowerCase().includes("unauthorized")) {
@@ -219,6 +225,13 @@ export default function DashboardPage() {
           <div>
             <h1 className="text-4xl font-bold font-serif text-zinc-900 dark:text-zinc-100">User Dashboard</h1>
             <p className="text-sm font-medium text-zinc-500 mt-1">{getUserEmail()}</p>
+            <div className="flex items-center gap-2 mt-1">
+              {hasS2Key ? (
+                <span className="text-xs text-green-600 font-medium">S2 Key: configured</span>
+              ) : (
+                <span className="text-xs text-zinc-400">S2 Key: not configured &mdash; <a href="/dashboard" className="underline">Manage Credentials</a></span>
+              )}
+            </div>
           </div>
           <div className="flex bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-1 rounded-xl shadow-sm">
             <button
@@ -470,6 +483,9 @@ export default function DashboardPage() {
 
               <div className="space-y-4">
                 <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Service Plan</label>
+                <p className="text-[11px] text-zinc-500 -mt-1">
+                  Volume discount on credit packages (10% off 500, 15% off 1,000) &mdash; applies to every model tier.
+                </p>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   {CREDIT_PACKAGES.map((pkg) => (
                     <button

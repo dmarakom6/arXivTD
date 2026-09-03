@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter, useParams } from "next/navigation";
 import { getToken, scansApi, GraphResponse, similarApi } from "@/lib/api";
 import { motion, AnimatePresence } from "framer-motion";
@@ -115,6 +115,55 @@ export default function ScanPage() {
   const [copied, setCopied] = useState(false);
   const [relatedPapers, setRelatedPapers] = useState<Array<{ title: string; arxiv_id: string; authors: string[] }>>([]);
   const [relatedLoading, setRelatedLoading] = useState(false);
+
+  const loadGraph = useCallback(async () => {
+    const arxivId = scan?.result_json?.arxiv_id;
+    if (!arxivId) {
+      setGraphError("No paper identifier available for this scan.");
+      setGraphLoading(false);
+      return;
+    }
+    setGraphLoading(true);
+    setGraphError("");
+    setGraphAttempted(true);
+    try {
+      const { keysApi, graphApi } = await import("@/lib/api");
+      const keys = await keysApi.list();
+      if (keys.length === 0) {
+        setGraphError("No API keys available. Please add a key in your dashboard.");
+        setGraphLoading(false);
+        return;
+      }
+      const revealedKey = await keysApi.reveal(keys[0].id);
+      if (!revealedKey.key) {
+        setGraphError("Could not retrieve API key. Please try again.");
+        setGraphLoading(false);
+        return;
+      }
+      const data = await graphApi.getByArxivId(arxivId, revealedKey.key);
+      if (!data || !data.nodes || data.nodes.length === 0) {
+        setGraphError("No citation data found for this paper.");
+        setGraphLoading(false);
+        return;
+      }
+      setGraphData(data);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to load citation graph";
+      setGraphError(message.includes("429") ? "Rate limited by citation service. Please wait and retry." : message);
+    } finally {
+      setGraphLoading(false);
+    }
+  }, [scan?.result_json?.arxiv_id]);
+
+  // Auto-retry once when the citation service rate-limits the graph request
+  useEffect(() => {
+    if (!graphError.toLowerCase().includes("rate limited")) return;
+    const timer = setTimeout(() => {
+      setGraphError("");
+      loadGraph();
+    }, 6000);
+    return () => clearTimeout(timer);
+  }, [graphError, loadGraph]);
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -307,22 +356,6 @@ export default function ScanPage() {
                     }
                   </p>
                 </div>
-                {result.scan_mode === 'basic' && (
-                  <div className="p-4 bg-zinc-900 rounded-sm border border-zinc-800 self-center">
-                    <div className="text-[11px] font-black uppercase tracking-widest text-zinc-500 mb-2">Verification Confidence</div>
-                    <div className="flex items-center gap-4">
-                      <div className="flex-1 h-1 bg-zinc-800 rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-emerald-500 transition-all duration-1000"
-                          style={{ width: `${(result.citations_validated.found / result.citations_validated.total) * 100}%` }}
-                        />
-                      </div>
-                      <span className="text-lg font-bold font-mono text-zinc-100">
-                        {((result.citations_validated.found / result.citations_validated.total) * 100).toFixed(0)}%
-                      </span>
-                    </div>
-                  </div>
-                )}
               </div>
             </div>
           ) : (
@@ -636,38 +669,7 @@ export default function ScanPage() {
             </div>
             {!graphData && !graphLoading && (
               <button
-                onClick={async () => {
-                  setGraphLoading(true);
-                  setGraphError("");
-                  setGraphAttempted(true);
-                  try {
-                    const { keysApi, graphApi } = await import("@/lib/api");
-                    const keys = await keysApi.list();
-                    if (keys.length === 0) {
-                      setGraphError("No API keys available. Please add a key in your dashboard.");
-                      setGraphLoading(false);
-                      return;
-                    }
-                    const revealedKey = await keysApi.reveal(keys[0].id);
-                    if (!revealedKey.key) {
-                      setGraphError("Could not retrieve API key. Please try again.");
-                      setGraphLoading(false);
-                      return;
-                    }
-                    const data = await graphApi.getByArxivId(result.arxiv_id, revealedKey.key);
-                    if (!data || !data.nodes || data.nodes.length === 0) {
-                      setGraphError("No citation data found for this paper.");
-                      setGraphLoading(false);
-                      return;
-                    }
-                    setGraphData(data);
-                  } catch (err) {
-                    const message = err instanceof Error ? err.message : "Failed to load citation graph";
-                    setGraphError(message.includes("429") ? "Rate limited by citation service. Please wait and retry." : message);
-                  } finally {
-                    setGraphLoading(false);
-                  }
-                }}
+                onClick={loadGraph}
                 className="text-xs font-bold uppercase tracking-widest border border-zinc-300 dark:border-zinc-700 px-4 py-1.5 rounded-sm hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors"
               >
                 Load Citation Relations
@@ -691,36 +693,7 @@ export default function ScanPage() {
               <button
                 onClick={() => {
                   setGraphError("");
-                  setGraphLoading(true);
-                  setGraphAttempted(false);
-                  import("@/lib/api").then(async ({ keysApi, graphApi }) => {
-                    try {
-                      const keys = await keysApi.list();
-                      if (keys.length === 0) {
-                        setGraphError("No API keys available. Please add a key in your dashboard.");
-                        setGraphLoading(false);
-                        return;
-                      }
-                      const revealedKey = await keysApi.reveal(keys[0].id);
-                      if (!revealedKey.key) {
-                        setGraphError("Could not retrieve API key. Please try again.");
-                        setGraphLoading(false);
-                        return;
-                      }
-                      const data = await graphApi.getByArxivId(result.arxiv_id, revealedKey.key);
-                      if (!data || !data.nodes || data.nodes.length === 0) {
-                        setGraphError("No citation data found for this paper.");
-                        setGraphLoading(false);
-                        return;
-                      }
-                      setGraphData(data);
-                    } catch (err) {
-                      const message = err instanceof Error ? err.message : "Failed to load citation graph";
-                      setGraphError(message.includes("429") ? "Rate limited by citation service. Please wait and retry." : message);
-                    } finally {
-                      setGraphLoading(false);
-                    }
-                  });
+                  loadGraph();
                 }}
                 className="text-xs font-bold uppercase tracking-widest border border-rose-300 dark:border-rose-700 text-rose-600 dark:text-rose-400 px-4 py-1.5 rounded-sm hover:bg-rose-100 dark:hover:bg-rose-900/30 transition-colors"
               >

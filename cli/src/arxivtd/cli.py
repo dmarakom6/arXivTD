@@ -1,17 +1,42 @@
 """CLI interface for ArXivTD."""
 
 import os
+import re
 import sys
 import json
 import time
-import random
 import threading
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import questionary
-from questionary import Choice, Separator
 import requests
+from questionary import Choice, Separator
+
+_ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
+
+
+def _xml_first(elem: ET.Element, *tags: str) -> ET.Element | None:
+    """Return the first child matching any tag using explicit None checks.
+
+    XML elements that only contain text (no child elements) are falsy in
+    Python (bool(Element) is False), so `a or b` chains on them silently
+    yield None. This helper avoids that pitfall.
+    """
+    for tag in tags:
+        found = elem.find(tag, _ATOM_NS)
+        if found is not None:
+            return found
+    return None
+
+
+def _xml_findall(elem: ET.Element, *tags: str) -> list[ET.Element]:
+    """Return children matching any tag, preferring the first non-empty match."""
+    for tag in tags:
+        found = elem.findall(tag, _ATOM_NS)
+        if found:
+            return found
+    return []
 
 
 def is_interactive() -> bool:
@@ -20,14 +45,80 @@ def is_interactive() -> bool:
 
 CONFIG_DIR = Path.home() / ".arxivtd"
 CONFIG_FILE = CONFIG_DIR / "config.json"
+REPORTS_DIR = Path.home() / "arxivtd-reports"
 
-API_BASE_URL = os.environ.get("ARXIVTD_API_URL", "https://arxivtd.com/api/v1")
+DEFAULT_API_BASE_URL = "https://arxivtd.com/api/v1"
 APP_URL = os.environ.get("ARXIVTD_APP_URL", "https://arxivtd.com")
 RATE_LIMIT = 5
 RATE_WINDOW = 1800
 
+# Local dev backends probed when the default API host is unreachable
+LOCAL_API_CANDIDATES = [
+    "http://localhost:8005/api/v1",
+    "http://127.0.0.1:8005/api/v1",
+    "http://localhost:8000/api/v1",
+    "http://localhost:8001/api/v1",
+]
+
 API_KEY_PROMPT = "Enter your API Key (from dashboard)"
 GROBID_URL_PROMPT = "Enter Grobid URL"
+
+
+def get_api_base_url() -> str:
+    """Resolve the API base URL: env var > config file > remote default."""
+    config = load_config()
+    return (
+        os.environ.get("ARXIVTD_API_URL")
+        or config.get("api_url")
+        or DEFAULT_API_BASE_URL
+    )
+
+
+def _is_host_local(url: str) -> bool:
+    """Return True if the URL points at a loopback host."""
+    host = url.split("//")[-1].split("/")[0].split(":")[0].lower()
+    return host in ("localhost", "127.0.0.1", "0.0.0.0", "::1")
+
+
+def _probe_url(url: str, timeout: float = 3.0) -> bool:
+    """Return True if the host answers HTTP with any status code."""
+    try:
+        requests.get(url.rstrip("/") + "/keys", timeout=timeout)
+        return True
+    except requests.RequestException:
+        return False
+
+
+def ensure_api_reachable() -> None:
+    """Make sure the configured API host is reachable; auto-detect local backend.
+
+    Resolves the base URL (env var > config > remote default). If the resolved
+    host is unreachable (e.g. no DNS for the pre-MVP remote default) and isn't a
+    loopback address, probes common local dev ports and persists the first hit so
+    future runs work without setting any env vars.
+    """
+    base_url = get_api_base_url()
+    if _is_host_local(base_url) or _probe_url(base_url):
+        return
+
+    print(f"⚠️  Cannot reach API at {base_url}")
+    for candidate in LOCAL_API_CANDIDATES:
+        if _probe_url(candidate):
+            config = load_config()
+            config["api_url"] = candidate
+            save_config(config)
+            print(f"   Detected local backend at {candidate}")
+            print("   (saved to ~/.arxivtd/config.json)")
+            return
+
+    print(
+        "\n❌ No API backend reachable.\n"
+        "   Start the backend, e.g.:\n"
+        "       cd backend && uv run uvicorn app.main:app --port 8005\n"
+        "   or point the CLI at a specific URL:\n"
+        "       export ARXIVTD_API_URL=http://localhost:8005/api/v1"
+    )
+    sys.exit(1)
 
 # Average scan times for ETA estimation (seconds)
 AVG_SCAN_TIMES = {
@@ -63,41 +154,42 @@ class RateLimiter:
 
 rate_limiter = RateLimiter()
 
-
-_LOCAL_QUOTES = [
-    '"The only way to do great work is to love what you do." — Steve Jobs',
-    '"In the middle of difficulty lies opportunity." — Albert Einstein',
-    '"Talk is cheap. Show me the code." — Linus Torvalds',
-    '"First, solve the problem. Then, write the code." — John Johnson',
-    '"Any sufficiently advanced technology is indistinguishable from magic." — Arthur C. Clarke',
-    '"Simplicity is the soul of efficiency." — Austin Freeman',
-    '"Make it work, make it right, make it fast." — Kent Beck',
-    '"Programs must be written for people to read." — Harold Abelson',
-    '"The best error message is the one that never shows up." — Thomas Fuchs',
-    '"Code is like humor. When you have to explain it, it\'s bad." — Cory House',
-    '"Fix the cause, not the symptom." — Steve Maguire',
-    '"Optimism is an occupational hazard of programming." — Kent Beck',
-    '"Deleted code is debugged code." — Jeff Sickel',
-    '"The most dangerous phrase is: We\'ve always done it this way." — Grace Hopper',
-    '"Perfection is achieved not when there is nothing more to add, but when there is nothing left to take away." — Antoine de Saint-Exupéry',
-]
+_ARXIV_ID_RE = re.compile(
+    r"^(\d{4}\.\d{4,5}|[a-z\-]+/\d{7})(v\d+)?$"
+)
 
 
-def _fetch_quote() -> str:
-    """Fetch a random quote from a free API, falling back to local quotes."""
-    apis = [
-        ("https://dummyjson.com/quotes/random", lambda d: f'"{d["quote"]}" — {d["author"]}'),
-        ("https://zenquotes.io/api/random", lambda d: f'"{d[0]["q"]}" — {d[0]["a"]}'),
-        ("https://api.quotable.io/quotes/random", lambda d: f'"{d[0]["content"]}" — {d[0]["author"]}'),
-    ]
-    for url, parser in apis:
-        try:
-            resp = requests.get(url, timeout=3)
-            if resp.status_code == 200:
-                return parser(resp.json())
-        except Exception:
-            continue
-    return random.choice(_LOCAL_QUOTES)
+def validate_arxiv_id(raw: str) -> str:
+    """Validate and clean an arXiv ID. Exits on invalid input."""
+    s = raw.strip()
+    # Strip URL prefix (with or without protocol)
+    s = re.sub(r"^(https?://)?arxiv\.org/abs/", "", s)
+    s = re.sub(r"^(https?://)?arxiv\.org/pdf/", "", s)
+    # Strip trailing .pdf
+    s = re.sub(r"\.pdf$", "", s)
+    # Strip trailing version if present for matching, then re-add
+    m = _ARXIV_ID_RE.match(s)
+    if m:
+        return s
+    # Also accept with version stripped for the regex
+    base = re.sub(r"v\d+$", "", s)
+    if _ARXIV_ID_RE.match(base):
+        return s
+    print(f"\n❌ Invalid arXiv ID: '{raw}'")
+    print("   Expected format: YYMM.NNNNN (e.g. 2205.14135) or category/YYMMNNN (e.g. hep-th/9901001)")
+    sys.exit(1)
+
+
+def validate_pdf_path(raw: str) -> Path:
+    """Validate a PDF file path. Exits on invalid input."""
+    p = Path(raw).expanduser().resolve()
+    if not p.exists():
+        print(f"\n❌ File not found: {p}")
+        sys.exit(1)
+    if not p.suffix.lower() == ".pdf":
+        print(f"\n❌ Not a PDF file: {p.name}")
+        sys.exit(1)
+    return p
 
 
 def _fetch_similar_papers(arxiv_id: str) -> list[dict]:
@@ -123,15 +215,14 @@ def _fetch_similar_papers(arxiv_id: str) -> list[dict]:
             return []
 
         root = ET.fromstring(resp.text)
-        ns = {"atom": "http://www.w3.org/2005/Atom"}
 
         # Extract categories from the paper
-        entry = root.find("atom:entry", ns) or root.find("entry")
+        entry = _xml_first(root, "atom:entry", "entry")
         if entry is None:
             return []
 
         categories = []
-        for cat in entry.findall("atom:category", ns) or entry.findall("category"):
+        for cat in _xml_findall(entry, "atom:category", "category"):
             term = cat.get("term")
             if term:
                 categories.append(term)
@@ -162,24 +253,33 @@ def _fetch_similar_papers(arxiv_id: str) -> list[dict]:
 
         search_root = ET.fromstring(search_resp.text)
         papers = []
-        for e in search_root.findall("atom:entry", ns) or search_root.findall("entry"):
-            title_elem = e.find("atom:title", ns) or e.find("title")
-            id_elem = e.find("atom:id", ns) or e.find("id")
-            if title_elem is not None and id_elem is not None:
-                title = title_elem.text.strip() if title_elem.text else ""
-                paper_id = id_elem.text.strip() if id_elem.text else ""
-                # Extract arXiv ID from URL
-                if "/abs/" in paper_id:
-                    paper_id = paper_id.split("/abs/")[-1]
-                # Skip the paper itself
-                if paper_id == clean_id:
-                    continue
-                papers.append({
-                    "title": title[:80],
-                    "id": paper_id,
-                })
-                if len(papers) >= 3:
-                    break
+        for e in _xml_findall(search_root, "atom:entry", "entry"):
+            title_elem = _xml_first(e, "atom:title", "title")
+            id_elem = _xml_first(e, "atom:id", "id")
+            if title_elem is None or id_elem is None:
+                continue
+            title = title_elem.text.strip() if title_elem.text else ""
+            paper_id = id_elem.text.strip() if id_elem.text else ""
+            # Extract arXiv ID from URL
+            if "/abs/" in paper_id:
+                paper_id = paper_id.split("/abs/")[-1]
+            # Strip version suffix (e.g. 2609.02005v1 → 2609.02005)
+            def _strip_ver(arxid: str) -> str:
+                return re.sub(r"v\d+$", "", arxid)
+            if _strip_ver(paper_id) == _strip_ver(clean_id):
+                continue
+            authors = []
+            for a in _xml_findall(e, "atom:author", "author"):
+                name = _xml_first(a, "atom:name", "name")
+                if name is not None and name.text:
+                    authors.append(name.text.strip())
+            papers.append({
+                "title": title,
+                "id": paper_id,
+                "authors": authors[:3],
+            })
+            if len(papers) >= 3:
+                break
 
         return papers
 
@@ -197,44 +297,7 @@ class SpinnerWithETA:
         self._active = False
         self._thread = None
         self._start_time = 0
-        self._last_quote_time = 0
-        self._quote_lines = 0
         self._similar_shown = False
-
-    def _show_quote(self, quote: str):
-        """Display a quote below the spinner, replacing any previous quote."""
-        max_width = 70
-        words = quote.split()
-        wrapped = []
-        current_line = "   💬 "
-        for word in words:
-            if len(current_line) + len(word) + 1 > max_width:
-                wrapped.append(current_line)
-                current_line = "      " + word
-            else:
-                current_line += " " + word if current_line.strip() else word
-        wrapped.append(current_line)
-
-        num_lines = len(wrapped)
-        # Clear old quote area (move down with \n, clear each line)
-        clear_lines = max(num_lines, self._quote_lines)
-        if clear_lines == 0:
-            clear_lines = 1  # At least one line for the quote
-        for _ in range(clear_lines):
-            sys.stdout.write("\n\033[2K")
-
-        # Move back up to spinner line
-        sys.stdout.write(f"\033[{clear_lines}A")
-
-        # Print new quote: for each line, \n down then write text
-        for ql in wrapped:
-            sys.stdout.write(f"\n\033[2K\033[2m{ql}\033[0m")
-
-        # Move back up to spinner line
-        sys.stdout.write(f"\033[{num_lines}A")
-
-        self._quote_lines = num_lines
-        sys.stdout.flush()
 
     def _worker(self):
         symbols = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -252,31 +315,30 @@ class SpinnerWithETA:
             else:
                 eta_str = "any moment"
 
-            line = f"\r{self.message} {symbols[i % len(symbols)]}  elapsed: {elapsed_str}  ETA: {eta_str}"
-            sys.stdout.write(line)
-            sys.stdout.flush()
+            if not self._similar_shown:
+                line = f"\r{self.message} {symbols[i % len(symbols)]}  elapsed: {elapsed_str}  ETA: {eta_str}"
+                sys.stdout.write(line)
+                sys.stdout.flush()
             time.sleep(0.1)
             i += 1
 
-            # Show quote every 10 seconds (first quote after 3s)
-            now = time.time()
-            first_quote_shown = self._last_quote_time > 0
-            if (not first_quote_shown and elapsed >= 3) or (first_quote_shown and now - self._last_quote_time >= 10):
-                self._last_quote_time = now
-                quote = _fetch_quote()
-                if quote:
-                    self._show_quote(quote)
-
-            # Show similar papers at 15 seconds
-            if not self._similar_shown and elapsed >= 15 and self.arxiv_id:
+            # Show similar papers at 7 seconds (no quotes, no cursor tricks)
+            if not self._similar_shown and elapsed >= 7 and self.arxiv_id:
                 self._similar_shown = True
                 similar = _fetch_similar_papers(self.arxiv_id)
                 if similar:
-                    sys.stdout.write("\r" + " " * 80 + "\r")
+                    # Clear spinner line
+                    sys.stdout.write("\r\033[2K")
+                    sys.stdout.flush()
+
+                    # Print related papers as a clean block
                     print("   📚 While you wait, check out these related papers:")
                     for p in similar:
-                        print(f"      • {p['title'][:65]}...")
-                        print(f"        {APP_URL}/scans/new?id={p['id']}")
+                        authors = ", ".join(p.get("authors") or [])
+                        print(f"      • {p['title'][:70]}")
+                        if authors:
+                            print(f"        {authors[:70]}")
+                        print(f"        https://arxiv.org/abs/{p['id']}")
                     sys.stdout.flush()
 
     def __enter__(self):
@@ -288,13 +350,6 @@ class SpinnerWithETA:
 
     def __exit__(self, *args):
         self._active = False
-        # Cursor is on spinner line; clear spinner + quote lines below
-        if self._quote_lines > 0:
-            for _ in range(self._quote_lines):
-                sys.stdout.write("\n\033[2K")
-            sys.stdout.write(f"\033[{self._quote_lines}A")
-        sys.stdout.write("\033[2K")
-        sys.stdout.flush()
         if self._thread:
             self._thread.join()
         elapsed = time.time() - self._start_time
@@ -356,7 +411,7 @@ def require_config():
 
 def api_request(method: str, endpoint: str, **kwargs) -> requests.Response:
     api_key = require_config()
-    url = f"{API_BASE_URL}{endpoint}"
+    url = f"{get_api_base_url()}{endpoint}"
     headers = {"X-API-Key": api_key}
     if "headers" not in kwargs:
         kwargs["headers"] = {}
@@ -430,6 +485,16 @@ def add_key_flow():
             "Grobid URL",
             default="http://localhost:8070",
         ).ask()
+
+        api_url = questionary.text(
+            "API URL",
+            default=get_api_base_url(),
+        ).ask() or get_api_base_url()
+
+        s2_key = questionary.text(
+            "Semantic Scholar API key (optional, for 0-credit basic scans)",
+            default="",
+        ).ask() or ""
     else:
         api_key = input("Enter your API Key: ").strip()
         if not api_key:
@@ -440,19 +505,50 @@ def add_key_flow():
             input("Grobid URL (default: http://localhost:8070): ").strip()
             or "http://localhost:8070"
         )
+        api_url = (
+            input(f"API URL (default: {get_api_base_url()}): ").strip()
+            or get_api_base_url()
+        )
+        s2_key = (
+            input("Semantic Scholar API key (optional, for 0-credit basic scans): ").strip()
+            or ""
+        )
 
     config = load_config()
     config.setdefault("keys", {})[name] = {
         "api_key": api_key,
         "grobid_url": grobid_url,
+        "s2_key": s2_key if s2_key else None,
     }
     config["active_key"] = name
     config["grobid_url"] = grobid_url
+    config["api_url"] = api_url
     save_config(config)
 
     print(f"\n✅ Key '{name}' saved and activated!")
     print(f"   API Key: ...{api_key[-8:]}")
     print(f"   Grobid:   {grobid_url}")
+    print(f"   API URL:  {api_url}")
+    if s2_key:
+        print(f"   S2 Key:   ...{s2_key[-4:]} (BYOK enabled)")
+        # Set S2 key on backend
+        try:
+            resp = requests.post(
+                f"{api_url}/user/s2-key",
+                headers={"X-API-Key": api_key, "Content-Type": "application/json"},
+                json={"s2_key": s2_key},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                print(f"   ✅ S2 key verified and saved on server")
+            else:
+                detail = resp.json().get("detail", "unknown error")
+                print(f"   ⚠️  S2 key validation failed: {detail}")
+                print(f"   You can set it later via the web dashboard")
+        except Exception as e:
+            print(f"   ⚠️  Could not reach server to set S2 key: {e}")
+    else:
+        print(f"   S2 Key:   not configured")
 
 
 def manage_keys():
@@ -619,43 +715,135 @@ def _print_scan_result(result: dict, output_file: Path | None = None):
     print(f"{'=' * 60}")
 
 
+def get_byok_status() -> bool:
+    """Query the server for BYOK (user S2 key) status.
+
+    Returns True when the user has a Semantic Scholar API key stored
+    server-side (basic scans are free; deep scans cost 2 credits). Fails
+    safe to False if the server is unreachable or errors.
+    """
+    return get_s2_key_info()[0]
+
+
+def get_s2_key_info() -> tuple[bool, str | None]:
+    """Query the server for BYOK status and the S2 key preview.
+
+    Returns (has_s2_key, preview). Fails safe to (False, None) if the
+    server is unreachable or errors.
+    """
+    api_key = require_config()
+    try:
+        resp = requests.get(
+            f"{get_api_base_url()}/user/s2-key",
+            headers={"X-API-Key": api_key},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            return bool(data.get("has_s2_key", False)), data.get("s2_key_preview")
+    except (requests.RequestException, ValueError):
+        pass
+    return False, None
+
+
+def get_byok_status_display() -> str:
+    """Human-readable S2 key status line for `arxivtd status`."""
+    has_s2_key, preview = get_s2_key_info()
+    if has_s2_key and preview:
+        return f"...{preview[-4:]} (BYOK enabled)"
+    if has_s2_key:
+        return "(BYOK enabled)"
+    return "not configured"
+
+
 def scan_arxiv(arxiv_id: str, mode: str = "basic"):
     if mode == "deep" and not rate_limiter.can_proceed():
         print(f"\n❌ Rate limit exceeded. Maximum 5 scans per 30 minutes.")
         sys.exit(1)
 
     api_key = require_config()
-    url = f"{API_BASE_URL}/trust/{arxiv_id}?mode={mode}"
 
-    credits = 3 if mode == "deep" else 1
-    print(f"\n📄 Mode: {mode} ({credits} {'credits' if credits > 1 else 'credit'})")
+    clean_id = validate_arxiv_id(arxiv_id)
 
-    with SpinnerWithETA("Analyzing paper...", mode=mode, arxiv_id=arxiv_id):
+    has_byok = get_byok_status()
+    credits = 0 if (mode == "basic" and has_byok) else (2 if has_byok else (3 if mode == "deep" else 1))
+    if credits == 0:
+        print(f"\n📄 Mode: {mode} (0 credits (BYOK))")
+    else:
+        print(f"\n📄 Mode: {mode} ({credits} {'credits' if credits > 1 else 'credit'})")
+
+    with SpinnerWithETA("Analyzing paper...", mode=mode, arxiv_id=clean_id):
         try:
             headers = {"X-API-Key": api_key}
-            response = requests.get(url, headers=headers, timeout=120)
 
-            if response.status_code == 200:
-                rate_limiter.record_request()
-                result = response.json()
+            # 1. Start the async scan (returns immediately with a scan_id)
+            start_url = f"{get_api_base_url()}/trust/{clean_id}/async?mode={mode}"
+            response = requests.get(start_url, headers=headers, timeout=30)
 
-                output_file = Path.cwd() / f"{arxiv_id}.json"
-                with open(output_file, "w") as f:
-                    json.dump(result, f, indent=2)
-
-                _print_scan_result(result, output_file)
-                return result
-            elif response.status_code == 402:
+            if response.status_code == 402:
                 print("\n❌ Insufficient credits.")
-            elif response.status_code == 404:
-                print(f"\n❌ Paper not found: {arxiv_id}")
-            else:
-                print(f"\n❌ Scan failed: {response.status_code}")
+                sys.exit(1)
+            if response.status_code == 429:
+                print("\n❌ Rate limited. Please wait and try again.")
+                sys.exit(1)
+            if response.status_code != 200:
+                print(f"\n❌ Failed to start scan: {response.status_code}")
                 try:
                     print(f"   {response.json().get('detail', 'Unknown error')}")
                 except Exception:
                     pass
                 sys.exit(1)
+
+            scan_id = response.json().get("scan_id")
+            if not scan_id:
+                print("\n❌ No scan ID returned from server.")
+                sys.exit(1)
+
+            # 2. Poll until the scan completes (scans can take several minutes)
+            status_url = f"{get_api_base_url()}/scans/{scan_id}/status"
+            deadline = time.time() + 20 * 60  # 20 minute cap
+            while time.time() < deadline:
+                time.sleep(3)
+                try:
+                    status_resp = requests.get(status_url, headers=headers, timeout=30)
+                except requests.RequestException:
+                    continue
+                if status_resp.status_code != 200:
+                    continue
+                status = status_resp.json()
+                if status.get("status") == "completed":
+                    break
+                if status.get("status") == "failed":
+                    print(f"\n❌ Scan failed: {status.get('error', 'Unknown error')}")
+                    sys.exit(1)
+            else:
+                print("\n❌ Scan timed out after 20 minutes.")
+                sys.exit(1)
+
+            # 3. Fetch the full result
+            result_url = f"{get_api_base_url()}/scans/{scan_id}"
+            result_resp = requests.get(result_url, headers=headers, timeout=30)
+            if result_resp.status_code != 200:
+                print(f"\n❌ Failed to fetch scan result: {result_resp.status_code}")
+                sys.exit(1)
+
+            scan_data = result_resp.json()
+            rate_limiter.record_request()
+
+            result = dict(scan_data.get("result_json") or {})
+            result["scan_id"] = scan_data.get("id", scan_id)
+            result["trust_score"] = scan_data.get(
+                "trust_score", result.get("trust_score")
+            )
+            result["credits_spent"] = scan_data.get("credits_spent")
+
+            REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+            output_file = REPORTS_DIR / f"{clean_id}.json"
+            with open(output_file, "w") as f:
+                json.dump(result, f, indent=2)
+
+            _print_scan_result(result, output_file)
+            return result
 
         except requests.RequestException as e:
             print(f"\n❌ Request failed: {e}")
@@ -673,19 +861,20 @@ def scan_pdf(pdf_path: str, mode: str = "basic"):
         sys.exit(1)
 
     api_key = require_config()
-    url = f"{API_BASE_URL}/analyze/pdf?mode={mode}"
+    pdf_file = validate_pdf_path(pdf_path)
+    url = f"{get_api_base_url()}/analyze/pdf?mode={mode}"
 
-    credits = 3 if mode == "deep" else 1
-    print(f"\n📄 Mode: {mode} ({credits} {'credits' if credits > 1 else 'credit'})")
-
-    if not os.path.exists(pdf_path):
-        print(f"\n❌ PDF not found: {pdf_path}")
-        sys.exit(1)
+    has_byok = get_byok_status()
+    credits = 0 if (mode == "basic" and has_byok) else (2 if has_byok else (3 if mode == "deep" else 1))
+    if credits == 0:
+        print(f"\n📄 Mode: {mode} (0 credits (BYOK))")
+    else:
+        print(f"\n📄 Mode: {mode} ({credits} {'credits' if credits > 1 else 'credit'})")
 
     with SpinnerWithETA("Analyzing PDF...", mode=mode):
         try:
-            with open(pdf_path, "rb") as f:
-                files = {"file": (os.path.basename(pdf_path), f, "application/pdf")}
+            with open(pdf_file, "rb") as f:
+                files = {"file": (pdf_file.name, f, "application/pdf")}
                 headers = {"X-API-Key": api_key}
                 response = requests.post(url, files=files, headers=headers, timeout=120)
 
@@ -695,7 +884,8 @@ def scan_pdf(pdf_path: str, mode: str = "basic"):
 
                 scan_id = result.get("scan_id") or result.get("id") or "unknown"
                 arxiv_id = result.get("arxiv_id", scan_id[:8])
-                output_file = Path.cwd() / f"{arxiv_id}.json"
+                REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+                output_file = REPORTS_DIR / f"{arxiv_id}.json"
                 with open(output_file, "w") as f:
                     json.dump(result, f, indent=2)
 
@@ -749,7 +939,7 @@ def batch_scan(directory: str, mode: str = "basic"):
     for i, pdf_file in enumerate(pdf_files, 1):
         print(f"[{i}/{len(pdf_files)}] Scanning: {pdf_file.name}")
 
-        url = f"{API_BASE_URL}/analyze/pdf?mode={mode}&is_batch=true"
+        url = f"{get_api_base_url()}/analyze/pdf?mode={mode}&is_batch=true"
         try:
             with open(pdf_file, "rb") as f:
                 files = {"file": (pdf_file.name, f, "application/pdf")}
@@ -805,10 +995,13 @@ def show_graph(paper_id: str):
     # Auto-detect: if it looks like a UUID/S2 ID, use /graph/id endpoint
     is_uuid = len(paper_id) == 36 and paper_id.count("-") == 5
 
+    if not is_uuid:
+        paper_id = validate_arxiv_id(paper_id)
+
     endpoint = (
-        f"{API_BASE_URL}/graph/id/{paper_id}"
+        f"{get_api_base_url()}/graph/id/{paper_id}"
         if is_uuid
-        else f"{API_BASE_URL}/graph/{paper_id}"
+        else f"{get_api_base_url()}/graph/{paper_id}"
     )
     label = f"S2:{paper_id[:8]}..." if is_uuid else f"arXiv:{paper_id}"
 
@@ -859,10 +1052,24 @@ def show_status():
     active_key_data = keys.get(active, {})
     print(f"\n   Active Key: {active}")
     print(f"   API Key: ...{active_key_data.get('api_key', '')[-8:]}")
-    print(f"   Grobid:  {config.get('grobid_url', 'Not set')}")
+    print(f"   API URL:  {get_api_base_url()}")
+    print(f"   Grobid:   {config.get('grobid_url', 'Not set')}")
+    print(f"   S2 Key:   {get_byok_status_display()}")
     print(f"\n   Rate Limit: {RATE_LIMIT} scans per 30 minutes")
     print(f"   Remaining:  {rate_limiter.remaining()}/5")
-    print(f"\n   Note: Credit balance requires web dashboard")
+
+    # Fetch credit balance from API
+    try:
+        headers = {"X-API-Key": active_key_data.get("api_key", "")}
+        resp = requests.get(f"{get_api_base_url()}/credits/balance", headers=headers, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            print(f"\n   Credits:    {data['credits_balance']}")
+            print(f"   Model:      {data['model_tier']}")
+        else:
+            print(f"\n   Credits:    (unavailable)")
+    except Exception:
+        print(f"\n   Credits:    (offline)")
 
 
 def show_history():
@@ -950,6 +1157,11 @@ Commands:
         print("ArXivTD CLI v0.2.0")
         sys.exit(0)
 
+    # Network commands need a reachable backend. Auto-detects a local dev
+    # backend when the configured/default host is unreachable.
+    if command in ("scan", "batch", "graph", "history"):
+        ensure_api_reachable()
+
     if command == "init":
         init_cli()
     elif command == "keys":
@@ -959,16 +1171,18 @@ Commands:
             print("Usage: arxivtd scan --pdf <file> OR --id <arxiv_id> [--deep]")
             sys.exit(1)
 
-        mode = "deep" if "--deep" in sys.argv else "basic"
+        mode = "deep" if ("--deep" in sys.argv or "-d" in sys.argv) else "basic"
 
-        if "--pdf" in sys.argv:
-            idx = sys.argv.index("--pdf")
+        if "--pdf" in sys.argv or "-pdf" in sys.argv:
+            flag = "--pdf" if "--pdf" in sys.argv else "-pdf"
+            idx = sys.argv.index(flag)
             if idx + 1 >= len(sys.argv):
                 print("Usage: arxivtd scan --pdf <file>")
                 sys.exit(1)
             scan_pdf(sys.argv[idx + 1], mode)
-        elif "--id" in sys.argv:
-            idx = sys.argv.index("--id")
+        elif "--id" in sys.argv or "-id" in sys.argv:
+            flag = "--id" if "--id" in sys.argv else "-id"
+            idx = sys.argv.index(flag)
             if idx + 1 >= len(sys.argv):
                 print("Usage: arxivtd scan --id <arxiv_id>")
                 sys.exit(1)

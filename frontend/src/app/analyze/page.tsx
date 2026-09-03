@@ -347,10 +347,16 @@ export default function AnalyzePage() {
               </div>
             )}
 
-            {!similarLoaded && (
+{!similarLoaded && (
               <div className="text-center py-4">
-                <Loader2 className="h-4 w-4 animate-spin text-zinc-400 mx-auto" />
+                <Loader2 className="h-4 w-4 animate-spin text-zinc-500 mx-auto" />
                 <p className="text-[11px] text-zinc-500 mt-2">Finding related papers...</p>
+              </div>
+            )}
+
+            {similarLoaded && similarPapers.length === 0 && (
+              <div className="text-center py-4 border border-dashed border-zinc-200 dark:border-zinc-800 rounded-lg bg-zinc-50/50 dark:bg-white/5">
+                <p className="text-[11px] text-zinc-500">No related papers found yet. Check back once the scan completes.</p>
               </div>
             )}
           </div>
